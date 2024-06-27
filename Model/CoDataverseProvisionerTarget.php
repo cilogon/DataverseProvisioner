@@ -320,7 +320,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   protected function createAuthenticatedUser($coProvisioningTargetData, $provisioningData) {
     $authenticatedUser = array();
     $coPersonId = $provisioningData['CoPerson']['id'];
-    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['id'];
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
     // We only create authenticated users for active CO Person records.
     $status = $provisioningData['CoPerson']['status'];
@@ -420,7 +420,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget
     // and reconcile.
-    $dataverseIdIdentifier = $this->getDataverseIdIdentifier($id, $coProvisioningTargetId);
+    $dataverseIdIdentifier = $this->getDataverseIdIdentifier($coPersonId, $coProvisioningTargetId);
 
     if(is_null($dataverseIdIdentifier)) {
       $this->addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId);
@@ -727,8 +727,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         break;
       default:
         // Ignore all other actions.
-        break;
         $ret = true;
+        break;
     }
 
     return $ret;
