@@ -52,6 +52,7 @@ class CoDataverseProvisionerTargetsController extends SPTController {
       $this->set('vv_identifiers_types', $this->CoDataverseProvisionerTarget->CoProvisioningTarget->Co->CoPerson->Identifier->types($this->cur_co['Co']['id'], 'type'));
       $this->set('vv_name_types', $this->CoDataverseProvisionerTarget->CoProvisioningTarget->Co->CoPerson->Name->types($this->cur_co['Co']['id'], 'type'));
       $this->set('vv_email_types', $this->CoDataverseProvisionerTarget->CoProvisioningTarget->Co->CoPerson->EmailAddress->types($this->cur_co['Co']['id'], 'type'));
+      $this->set('vv_group_types', $this->CoDataverseProvisionerTarget->CoProvisioningTarget->Co->CoPerson->Identifier->types($this->cur_co['Co']['id'], 'type'));
     }
   }
   

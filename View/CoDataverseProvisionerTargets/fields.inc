@@ -71,8 +71,9 @@
 <ul id="<?php print $this->action; ?>_co_dataverse_provisioner_target" class="fields form-list form-list-admin">
   <li>
     <div class="field-name">
-      <?php print ($e ? $this->Form->label('server_id', _txt('fd.server')) : _txt('fd.server')); ?>
+      <?php print ($e ? $this->Form->label('server_id', _txt('pl.dataverseprovisioner.server')) : _txt('pl.dataverseprovisioner.server')); ?>
       <span class="required">*</span>
+      <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.server_desc'); ?></div>
     </div>
     <div class="field-info">
       <?php
@@ -94,6 +95,37 @@
         } else {
           if(!empty($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['server_id'])) {
             print filter_var($vv_servers[ $co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['server_id'] ], FILTER_SANITIZE_SPECIAL_CHARS);
+          }
+        }
+      ?>
+    </div>
+  </li>
+  <li>
+    <div class="field-name">
+      <?php print ($e ? $this->Form->label('doi_server_id', _txt('pl.dataverseprovisioner.doi_server')) : _txt('pl.dataverseprovisioner.doi_server')); ?>
+      <span class="required">*</span>
+      <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.doi_server_desc'); ?></div>
+    </div>
+    <div class="field-info">
+      <?php
+        $attrs = array();
+        $attrs['value'] = (isset($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['doi_server_id']) 
+                           ? $co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['doi_server_id']
+                           : null);
+        // Since required=true, this will render blank by default but not allow save until a server is selected
+        $attrs['empty'] = true;
+
+        if($e) {
+          print $this->Form->select('doi_server_id',
+                                    $vv_servers,
+                                    $attrs);
+
+          if($this->Form->isFieldError('doi_server_id')) {
+            print $this->Form->error('doi_server_id');
+          }
+        } else {
+          if(!empty($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['doi_server_id'])) {
+            print filter_var($vv_servers[ $co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['doi_server_id'] ], FILTER_SANITIZE_SPECIAL_CHARS);
           }
         }
       ?>
@@ -222,6 +254,35 @@
   <li>
     <div class="field-name">
       <div class="field-title">
+        <?php print _txt('pl.dataverseprovisioner.group_type'); ?>
+      </div>
+      <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.group_type.desc'); ?></div>
+    </div>
+    <div class="field-info">
+      <?php
+        $attrs = array();
+        $attrs['value'] = (isset($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['group_type'])
+                           ? $co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['group_type']
+                           : "");
+        $attrs['empty'] = true;
+
+        if($e) {
+          print $this->Form->select('group_type',
+                                    $vv_group_types,
+                                    $attrs);
+
+          if($this->Form->isFieldError('group_type')) {
+            print $this->Form->error('group_type');
+          }
+        } else {
+          print _txt('en.identifier.type', null, filter_var($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['group_type'],FILTER_SANITIZE_SPECIAL_CHARS));
+        }
+      ?>
+    </div>
+  </li>
+  <li>
+    <div class="field-name">
+      <div class="field-title">
         <?php print _txt('pl.dataverseprovisioner.authentication_provider_id'); ?>
         <span class="required">*</span>
       </div>
@@ -236,6 +297,26 @@
         print $this->Form->text('authentication_provider_id', $attrs);
         if($this->Form->isFieldError('authentication_provider_id')) {
           print $this->Form->error('authentication_provider_id');
+        }
+      ?>
+    </div>
+  </li>
+  <li>
+    <div class="field-name">
+      <div class="field-title">
+        <?php print _txt('pl.dataverseprovisioner.skip_doi'); ?>
+      </div>
+      <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.skip_doi.desc'); ?></div>
+    </div>
+    <div class="field-info">
+      <?php
+        $attrs = array();
+        if(!$e) {
+          $attrs['disabled'] = true;
+        }
+        print $this->Form->input('skip_doi', $attrs);
+        if($this->Form->isFieldError('skip_doi')) {
+          print $this->Form->error('skip_doi');
         }
       ?>
     </div>

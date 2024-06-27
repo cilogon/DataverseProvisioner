@@ -35,11 +35,16 @@
     <field name="server_id" type="I">
       <constraint>REFERENCES cm_servers(id)</constraint>
     </field>
+    <field name="doi_server_id" type="I">
+      <constraint>REFERENCES cm_servers(id)</constraint>
+    </field>
     <field name="authentication_provider_id" type="C" size="256" />
     <field name="persistent_user_id_type" type="C" size="64" />
     <field name="identifier_type" type="C" size="64" />
     <field name="name_type" type="C" size="64" />
     <field name="email_type" type="C" size="64" />
+    <field name="group_type" type="C" size="64" />
+    <field name="skip_doi" type="L" />
     <field name="created" type="T" />
     <field name="modified" type="T" />
     

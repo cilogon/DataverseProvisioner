@@ -21,7 +21,7 @@
  * 
  * @link          http://www.internet2.edu/comanage COmanage Project
  * @package       registry-plugin
- * @since         COmanage Registry v4.0.0
+ * @since         COmanage Registry v4.3.4
  * @license       Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
  */
 
@@ -46,8 +46,11 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   // Request Http servers
   public $cmServerType = ServerEnum::HttpServer;
   
-  // Instance of CoHttpClient
+  // Instance of CoHttpClient for Dataverse server
   protected $Http = null;
+
+  // Instance of CoHttpClient for DOI API server
+  protected $Doi = null;
 
   // Dataverse API query string parameter
   protected $unblockKey = null;
@@ -65,6 +68,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         'unfreeze' => 'CO'
       )
     ),
+    'doi_server_id' => array(
+      'content' => array(
+        'rule' => 'numeric',
+        'required' => true,
+        'unfreeze' => 'CO'
+      )
+    ),
     'authentication_provider_id' => array(
       'content' => array(
         'rule' => 'notBlank',
@@ -76,13 +86,27 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       'content' => array(
         'rule' => array('validateExtendedType',
                         array('attribute' => 'Identifier.type',
-                              'default' => array(IdentifierEnum::ePPN,
+                              'default' => array(IdentifierEnum::AffiliateSOR, 
+                                                 IdentifierEnum::Badge,
+                                                 IdentifierEnum::Enterprise,
+                                                 IdentifierEnum::ePPN,
                                                  IdentifierEnum::ePTID,
+                                                 IdentifierEnum::ePUID,
+                                                 IdentifierEnum::GID,
+                                                 IdentifierEnum::GuestSOR,
+                                                 IdentifierEnum::HRSOR,
                                                  IdentifierEnum::Mail,
+                                                 IdentifierEnum::National,
+                                                 IdentifierEnum::Network,
                                                  IdentifierEnum::OIDCsub,
                                                  IdentifierEnum::OpenID,
+                                                 IdentifierEnum::ORCID,
+                                                 IdentifierEnum::ProvisioningTarget,
+                                                 IdentifierEnum::Reference,
                                                  IdentifierEnum::SamlPairwise,
                                                  IdentifierEnum::SamlSubject,
+                                                 IdentifierEnum::StudentSOR,
+                                                 IdentifierEnum::SORID,
                                                  IdentifierEnum::UID))),
         'required' => true,
         'allowEmpty' => false
@@ -92,13 +116,27 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       'content' => array(
         'rule' => array('validateExtendedType',
                         array('attribute' => 'Identifier.type',
-                              'default' => array(IdentifierEnum::ePPN,
+                              'default' => array(IdentifierEnum::AffiliateSOR,
+                                                 IdentifierEnum::Badge,
+                                                 IdentifierEnum::Enterprise,
+                                                 IdentifierEnum::ePPN,
                                                  IdentifierEnum::ePTID,
+                                                 IdentifierEnum::ePUID,
+                                                 IdentifierEnum::GID,
+                                                 IdentifierEnum::GuestSOR,
+                                                 IdentifierEnum::HRSOR,
                                                  IdentifierEnum::Mail,
+                                                 IdentifierEnum::National,
+                                                 IdentifierEnum::Network,
                                                  IdentifierEnum::OIDCsub,
                                                  IdentifierEnum::OpenID,
+                                                 IdentifierEnum::ORCID,
+                                                 IdentifierEnum::ProvisioningTarget,
+                                                 IdentifierEnum::Reference,
                                                  IdentifierEnum::SamlPairwise,
                                                  IdentifierEnum::SamlSubject,
+                                                 IdentifierEnum::StudentSOR,
+                                                 IdentifierEnum::SORID,
                                                  IdentifierEnum::UID))),
         'required' => true,
         'allowEmpty' => false
@@ -131,18 +169,50 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         'required' => true,
         'allowEmpty' => false
       )
+    ),
+    'group_type' => array(
+      'content' => array(
+        'rule' => array('validateExtendedType',
+                        array('attribute' => 'Identifier.type',
+                              'default' => array(IdentifierEnum::AffiliateSOR,
+                                                 IdentifierEnum::Badge,
+                                                 IdentifierEnum::Enterprise,
+                                                 IdentifierEnum::ePPN,
+                                                 IdentifierEnum::ePTID,
+                                                 IdentifierEnum::ePUID,
+                                                 IdentifierEnum::GID,
+                                                 IdentifierEnum::GuestSOR,
+                                                 IdentifierEnum::HRSOR,
+                                                 IdentifierEnum::Mail,
+                                                 IdentifierEnum::National,
+                                                 IdentifierEnum::Network,
+                                                 IdentifierEnum::OIDCsub,
+                                                 IdentifierEnum::OpenID,
+                                                 IdentifierEnum::ORCID,
+                                                 IdentifierEnum::ProvisioningTarget,
+                                                 IdentifierEnum::Reference,
+                                                 IdentifierEnum::SamlPairwise,
+                                                 IdentifierEnum::SamlSubject,
+                                                 IdentifierEnum::StudentSOR,
+                                                 IdentifierEnum::SORID,
+                                                 IdentifierEnum::UID))),
+        'required' => false,
+        'allowEmpty' => true
+      )
+    ),
+    'skip_doi' => array(
+      'rule' => array('boolean')
     )
   );
 
   /**
    * Add Dataverse ID Identifier of type IdentifierEnum::ProvisioningTarget
    *
-   * @since  COmanage Registry v4.0.0
+   * @since  COmanage Registry v4.3.4
    * @param  Integer  $dataverseId             Dataverse ID
    * @param  Integer  $coPersonId              CO Person ID
    * @param  Integer  $coProvisioningTargetId  Provisioning Target ID
    * @return none                           
-   * @throws RuntimeException
    */
 
   protected function addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId) {
@@ -159,9 +229,88 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Map CO Group to owner dataverse and explicit group alias combination
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  Array $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array $coGroup                  CO Group data
+   * @return Array array of owner dataverse, explicit group alias, and comment on error                         
+   * @throws InvalidArgumentException
+   */
+
+  protected function coGroupToOwnerDataverse($coProvisioningTargetData, $coGroup) {
+    $ret = array();
+    $ret['ownerDataverseAlias'] = null;
+    $ret['explicitGroupAlias'] = null;
+    $ret['comment'] = "";
+
+    $groupIdentifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['group_type'];
+
+    // Find the Dataverse group Identifier for the CO Group which holds the DOI.
+    $doi = null;
+    foreach($coGroup['Identifier'] as $identifier) {
+      if ($identifier['type'] == $groupIdentifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
+        $doi = $identifier['identifier'];
+      }
+    }
+
+    if(is_null($doi)) {
+      $ret['comment'] = "No Identifier of type " . $groupIdentifierType . " for CO Group";
+      return $ret;
+    }
+
+    // If configured skip using the DOI API to map the DOI to a specific
+    // Dataverse Server instance and instead just assume that the CO Group with
+    // this DOI is intended to be provisioned to our configured Dataverse server.
+    //
+    // This option is useful when testing since the sandbox Dataverse servers
+    // may not actually publish DOIs in a way that can be resolved using the
+    // DOI API.
+    $skipDoiMapping = $coProvisioningTargetData['CoDataverseProvisionerTarget']['skip_doi'] ?? false;
+    if(!$skipDoiMapping) {
+      // Exchange the DOI using the DOI API for a server host.
+      $doiMappedServerHost = $this->doiToMappedServerHost($doi, $coProvisioningTargetData);
+
+      if(is_null($doiMappedServerHost)) {
+        $ret['comment'] = "Unable to map DOI to Dataverse server";
+        return $ret;
+      }
+
+      // Find our configured Dataserver host.
+      $args = array();
+      $args['conditions']['Server.id'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'];
+      $args['conditions']['Server.status'] = SuspendableStatusEnum::Active;
+      $args['contain'] = array('HttpServer');
+
+      $CoProvisioningTarget = new CoProvisioningTarget();
+      $srvr = $CoProvisioningTarget->Co->Server->find('first', $args);
+
+      if(empty($srvr)) {
+        throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
+      }
+
+      $myServerHost = parse_url($srvr['HttpServer']['serverurl'])['host'];
+
+      // If the server mapped from the DOI is not the same as our server then return.
+      if($myServerHost != $doiMappedServerHost) {
+        $ret['comment'] = "DOI does not map to this Dataverse server";
+        return $ret;
+      }
+    }
+
+    // Query the Dataverse server with the DOI persistent ID to find the owner dataverse.
+    $ret['ownerDataverseAlias'] = $this->doiToOwnerDataverseAlias($doi);
+
+    // The group alias in the owning dataverse/collection is constructed from the DOI.
+    $ret['explicitGroupAlias'] = "authorized_" . str_replace(array(".", "/"), array("_", "_"), $doi);
+
+    return $ret;
+  }
+
+  /**
    * Create an Authenticated User in Dataverse for a CO Person.
    * 
-   * @since  COmanage Registry v4.3.3
+   * @since  COmanage Registry v4.3.4
    * @param  Array            $coProvisioningTargetData  CoProvisioningTargetData
    * @param  Array            $provisioningData          provisioning data
    * @throws RuntimeException
@@ -196,7 +345,6 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     // Skip over CO person records that are already provisioned.
-    $this->createHttpClient($coProvisioningTargetData);
     if(!empty($this->getAuthenticatedUserByIdentifier($dataverseIdentifier))) {
       return true;
     }
@@ -226,7 +374,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $namei = null;
 
     foreach ($provisioningData['Name'] as $i => $name) {
-      if($name['type'] == $nameType) {
+      if($name['type'] == $nameType && boolean($name['primary_name'])) {
         $namei = $i;
         break;
       }
@@ -257,7 +405,6 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
-
     $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
 
     // Provision the authenticated user in Dataverse.
@@ -284,15 +431,90 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     return true;
   }
+
+  /**
+   * Create HTTP client connected to DOI server
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  Array $coProvisioningTargetData CO Provisioning Target data
+   * @return Void
+   * @throws InvalidArgumentException
+   */
+
+  protected function createDoiClient($coProvisioningTargetData) {
+      $args = array();
+      $args['conditions']['Server.id'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['doi_server_id'];
+      $args['conditions']['Server.status'] = SuspendableStatusEnum::Active;
+      $args['contain'] = array('HttpServer');
+
+      $CoProvisioningTarget = new CoProvisioningTarget();
+      $srvr = $CoProvisioningTarget->Co->Server->find('first', $args);
+
+      if(empty($srvr)) {
+        throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
+      }
+      
+      $this->Doi = new CoHttpClient();
+      
+      $this->Doi->setConfig($srvr['HttpServer']);
+
+      $this->Doi->setRequestOptions(array(
+        'header' => array(
+          'Accept'          => 'application/json',
+          'Content-Type'    => 'application/json; charset=UTF-8'
+        )
+      ));
+  }
+
+  /**
+   * Create a dataverse explicit group.
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  Array                  $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array                  $provisioningData         Provisioning data, populated with ['CoGroup']
+   * @return Boolean True on success
+   */
+
+  protected function createExplicitGroup($coProvisioningTargetData, $provisioningData) {
+    list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($this->coGroupToOwnerDataverse($coProvisioningTargetData, $provisioningData));
+
+    if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
+      $this->log($comment);
+      return false;
+    }
+
+    // Get the Dataverse explicit group.
+    $dataverseExplicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
+
+    if(!empty($dataverseExplicitGroup)) {
+      $this->log("Dataverse explicit group with alias $explicitGroupAlias already exists");
+      return true;
+    }
+
+    // Provision the explicit group user in Dataverse.
+    $dataverseExplicitGroup = array();
+    $dataverseExplicitGroup["displayName"] = $provisioningData['CoGroup']['name'];
+    $dataverseExplicitGroup["description"] = $provisioningData['CoGroup']['description'];
+    $dataverseExplicitGroup["aliasInOwner"] = $explicitGroupAlias;
+
+    $path = "/api/dataverses/" . $ownerDataverseAlias . "/groups" . "?unblock-key=" . $this->unblockKey;
+    $response = $this->Http->post($path, json_encode($dataverseExplicitGroup));
+
+    if($response->code != 201) {
+      $this->log("Error creating explicit group " . print_r($dataverseExplicitGroup, true));
+      return false;
+    }
+
+    return true;
+  }
   
   /**
    * Create HTTP client connected to Dataverse server
    *
-   * @since   COmanage Registry v4.0.0
-   * @param   Array $coProvisioningTargetData Provisioning target data as passed to provision function
+   * @since   COmanage Registry v4.3.4
+   * @param   Array $coProvisioningTargetData CO Provisioning target data
    * @return  Void
    * @throws  InvalidArgumentException
-   *
    */
 
   protected function createHttpClient($coProvisioningTargetData) {
@@ -307,7 +529,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       if(empty($srvr)) {
         throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
       }
-      
+
       $this->Http = new CoHttpClient();
       
       $this->Http->setConfig($srvr['HttpServer']);
@@ -338,13 +560,76 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Map DOI to a dataverse server host.
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  String                 $doi                      DOI
+   * @param  Array                  $coProvisioningTargetData CO Provisioning Target data
+   * @return String dataserver server host
+   */
+
+  protected function doiToMappedServerHost($doi, $coProvisioningTargetData) {
+    $host = null;
+    $this->createDoiClient($coProvisioningTargetData);
+
+    $path = "/api/handles/" . $doi;
+    $response = $this->Doi->get($path);
+
+    if($response->code == 200) {
+      $values = json_decode($response->body, true)['values'] ?? null;
+      foreach($values as $v) {
+        if($v['type'] == 'URL') {
+          $citationUrl = $v['data']['value'];
+          $host = parse_url($citationUrl)['host'];
+        }
+      }
+    }
+
+    return $host;
+  }
+
+  /**
+   * Map DOI to an owner dataverse alias.
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  String $doi DOI
+   * @return String owner dataverse alias
+   */
+
+  protected function doiToOwnerDataverseAlias($doi) {
+    $ownerDataverseAlias = null;
+
+    $path = "/api/datasets/:persistentId/";
+
+    $query = array();
+    $query['persistentId'] = "doi:" . $doi;
+    $query['returnOwners'] = "true";
+    $query['unblock-key'] = $this->unblockKey;
+
+    $response = $this->Http->get($path, $query);
+
+    if($response->code == 200) {
+      $body = json_decode($response->body, true);
+      $type = $body['data']['isPartOf']['type'] ?? null;
+      $identifier = $body['data']['isPartOf']['identifier'] ?? null;
+
+      if($type == "DATAVERSE" && !empty($identifier)) {
+        $ownerDataverseAlias = $identifier;
+      }
+    }
+
+    return $ownerDataverseAlias;
+  }
+
+  /**
    * Get Dataverse authenticated user using Dataverse identifier
    *
-   * @since  COmanage Registry v4.0.0
-   * @param  String  $identifier             Dataverse identifier
-   * @return Array                           Array of authenticated user details 
+   * @since  COmanage Registry v4.3.4
+   * @param  String  $identifier  Dataverse identifier
+   * @return Array   Array of authenticated user details 
    * @throws RuntimeException
    */
+
   protected function getAuthenticatedUserByIdentifier($identifier) {
     $authenticatedUser = array();
 
@@ -359,10 +644,34 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     return $authenticatedUser;
   }
 
+
+  /**
+   * Get a dataverse explicit group.
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  String $ownerDataverseAlias owner dataverse alias 
+   * @param  String $explicitGroupAlias  explicit group alias
+   * @return Array explicit group object
+   */
+
+  protected function getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias) {
+    $dataverseExplicitGroup = array();
+
+    $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias";
+    $query = array('unblock-key' => $this->unblockKey);
+    $response = $this->Http->get($path, $query);
+
+    if($response->code == 200) {
+      $dataverseExplicitGroup = json_decode($response->body, true)['data'];
+    }
+
+    return $dataverseExplicitGroup;
+  }
+
   /**
    * Get Dataverse ID Identifier of type IdentifierEnum::ProvisioningTarget
    *
-   * @since  COmanage Registry v4.0.0
+   * @since  COmanage Registry v4.3.4
    * @param  Integer  $coPersonId              CO Person ID
    * @param  Integer  $coProvisioningTargetId  Provisioning Target ID
    * @return Array                             Dataverse ID Identifier of type IdentifierEnum::ProvisioningTarget
@@ -387,51 +696,48 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   /**
    * Provision for the specified CO Person.
    *
-   * @since  COmanage Registry v4.0.0
+   * @since  COmanage Registry v4.3.4
    * @param  Array                  $coProvisioningTargetData CO Provisioning Target data
    * @param  ProvisioningActionEnum $op                       Registry transaction type triggering provisioning
    * @param  Array                  $provisioningData         Provisioning data, populated with ['CoPerson'] or ['CoGroup']
    * @return Boolean True on success
-   * @throws RuntimeException
    */
   
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
-    // First determine what to do
-    $deletePerson = false;
-    $syncPerson = false;
+
+    // Initialize HTTP client connection to Dataverse server.
+    $this->createHttpClient($coProvisioningTargetData);
 
     switch($op) {
+      // We only write users to the Dataverse server once. There is no update.
       case ProvisioningActionEnum::CoPersonAdded:
       case ProvisioningActionEnum::CoPersonPetitionProvisioned:
       case ProvisioningActionEnum::CoPersonPipelineProvisioned:
       case ProvisioningActionEnum::CoPersonReprovisionRequested:
-        $this->createAuthenticatedUser($coProvisioningTargetData, $provisioningData);
-
-//      case ProvisioningActionEnum::CoPersonEnteredGracePeriod:
-//      case ProvisioningActionEnum::CoPersonExpired:
-//      case ProvisioningActionEnum::CoPersonUnexpired:
-//      case ProvisioningActionEnum::CoPersonUpdated:
-//        if($provisioningData['CoPerson']['status'] == StatusEnum::Deleted) {
-//          $deletePerson = true;
-//        } else {
-//          $syncPerson = true;
-//        }
-//        break;
-//      case ProvisioningActionEnum::CoPersonDeleted:
-//        $deletePerson = true;
-//        break;
-      default:
-        // Ignore all other actions. Note group membership changes
-        // are typically handled as CoPersonUpdated events.
-        return true;
+        $ret = $this->createAuthenticatedUser($coProvisioningTargetData, $provisioningData);
         break;
+      // We only write explicit groups to the Dataverse server once for now.
+      case ProvisioningActionEnum::CoGroupReprovisionRequested:
+        $ret = $this->createExplicitGroup($coProvisioningTargetData, $provisioningData);
+        break;
+      // We update explicit group memberships. Updates on CO Group name or description
+      // are currently not supported.
+      case ProvisioningActionEnum::CoGroupUpdated:
+        $ret = $this->updateExplicitGroupMembership($coProvisioningTargetData, $provisioningData);
+        break;
+      default:
+        // Ignore all other actions.
+        break;
+        $ret = true;
     }
+
+    return $ret;
   }
 
   /**
    * Determine the provisioning status of this target.
    *
-   * @since  COmanage Registry v4.0.0
+   * @since  COmanage Registry v4.3.4
    * @param  Integer $coProvisioningTargetId CO Provisioning Target ID
    * @param  Model   $Model                  Model being queried for status (eg: CoPerson, CoGroup,
    *                                         CoEmailList, COService)
@@ -454,6 +760,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $coProvisioningTargetData = $this->find('first', $args);
 
+    // Create HTTP client to connect to Dataverse server.
     $this->createHttpClient($coProvisioningTargetData);
 
     if($model->name == 'CoPerson') {
@@ -501,8 +808,102 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       } elseif(empty($authenticatedUser) && !is_null($dataverseIdIdentifier)) {
         $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
       }
+    } else if ($model->name == 'CoGroup') {
+      // Pull the Co Group record.
+      $args = array();
+      $args['conditions']['CoGroup.id'] = $id;
+      $args['contain'] = array();
+      $args['contain'][] = 'Identifier';
+
+      $coGroup = $this->CoProvisioningTarget->Co->CoGroup->find('first', $args);
+
+      // Find the owner dataverse and explicit group alias.
+      $obj = $this->coGroupToOwnerDataverse($coProvisioningTargetData, $coGroup);
+      list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($obj);
+
+      if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
+        $ret['comment'] = $comment;
+        return $ret;
+      }
+
+      // Try to get the Dataverse explicit group.
+      $dataverseExplicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
+
+      if(!empty($dataverseExplicitGroup)) {
+        $ret['status'] = ProvisioningStatusEnum::Provisioned;
+        $ret['comment'] = "Owner dataverse alias is $ownerDataverseAlias";
+      }
     }
 
     return $ret;
+  }
+
+  /**
+   * Update memberships in the dataverse explicit group.
+   *
+   * @since  COmanage Registry v4.3.4
+   * @param  Array $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array $provisioningData         Provisioning data, populated with ['CoPerson'] and ['CoGroup']
+   * @return Boolean True on success
+   */
+  
+  protected function updateExplicitGroupMembership($coProvisioningTargetData, $provisioningData) {
+    // We only operate on CO Group updates that include membership updates.
+    $coPersonId = $provisioningData['CoGroup']['CoPerson']['id'] ?? null;
+    if(is_null($coPersonId)) {
+      return false;
+    }
+
+    // Pull the CoPerson record to find the Dataverse Identifier.
+    $args = array();
+    $args['conditions']['CoPerson.id'] = $coPersonId;
+    $args['contain'] = array();
+    $args['contain'][] = 'Identifier';
+
+    $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
+
+    // Find the Dataverse identifier.
+    $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
+    $dataverseIdentifier = null;
+    foreach($coPerson['Identifier'] as $identifier) {
+      if($identifier['type'] == $identifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
+        $dataverseIdentifier = $identifier['identifier'];
+        break;
+      }
+    }
+
+    if(is_null($dataverseIdentifier)) {
+      $this->log("Could not determine dataverse Identifier for CO Person with ID $coPersonId");
+      return false;
+    }
+
+    // Find the owner dataverse and explicit group alias.
+    $obj = $this->coGroupToOwnerDataverse($coProvisioningTargetData, $provisioningData);
+    list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($obj);
+
+    if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
+      $this->log("Could not map CO Group to owner dataverse and explicit group alias");
+      return false;
+    }
+
+    // The URL path is the same for adding (PUT) or removing (DELETE).
+    $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias/roleAssignees/@$dataverseIdentifier";
+    $query = array('unblock-key' => $this->unblockKey);
+
+    if(!empty($provisioningData['CoGroup']['CoGroupMember'])) {
+      $response = $this->Http->put($path, $query);
+      if($response->code != 200) {
+        $this->log("Error adding membership for CO Person with ID $coPersonId");
+        return false;
+      }
+    } else {
+      $response = $this->Http->delete($path, $query);
+      if($response->code != 200) {
+        $this->log("Error deleting membership for CO Person with ID $coPersonId");
+        return false;
+      }
+    }
+
+    return true;
   }
 }
