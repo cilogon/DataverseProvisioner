@@ -374,7 +374,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $namei = null;
 
     foreach ($provisioningData['Name'] as $i => $name) {
-      if($name['type'] == $nameType && boolean($name['primary_name'])) {
+      if($name['type'] == $nameType && (bool)$name['primary_name']) {
         $namei = $i;
         break;
       }
