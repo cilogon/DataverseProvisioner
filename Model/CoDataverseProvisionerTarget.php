@@ -412,6 +412,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $response = $this->Http->post($path, json_encode($authenticatedUser));
 
     if($response->code != 200) {
+      $this->log("Unable to create authenticated user " . print_r($authenticatedUser, true));
+      $this->log("Response from server was " . print_r($response, true));
       return false;
     }
 
@@ -502,6 +504,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     if($response->code != 201) {
       $this->log("Error creating explicit group " . print_r($dataverseExplicitGroup, true));
+      $this->log("Response from server was " . print_r($response, true));
       return false;
     }
 
@@ -894,12 +897,14 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $response = $this->Http->put($path, $query);
       if($response->code != 200) {
         $this->log("Error adding membership for CO Person with ID $coPersonId");
+        $this->log("Response from server was " . print_r($response, true));
         return false;
       }
     } else {
       $response = $this->Http->delete($path, $query);
       if($response->code != 200) {
         $this->log("Error deleting membership for CO Person with ID $coPersonId");
+        $this->log("Response from server was " . print_r($response, true));
         return false;
       }
     }
