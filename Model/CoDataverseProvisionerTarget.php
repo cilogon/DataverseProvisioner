@@ -393,7 +393,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $emaili = null;
 
     foreach ($provisioningData['EmailAddress'] as $i => $email) {
-      if($email['type'] == $emailType) {
+      if($email['type'] == $emailType && empty($email['source_email_address_id'])) {
         $emaili = $i;
         break;
       }
