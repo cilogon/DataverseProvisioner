@@ -54,7 +54,10 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
   // Dataverse API query string parameter
   protected $unblockKey = null;
-  
+
+  // Active ID used in logging
+  protected $activeId;
+
   // Validation rules for table elements
   public $validate = array(
     'co_provisioning_target_id' => array(
@@ -322,9 +325,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $coPersonId = $provisioningData['CoPerson']['id'];
     $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
+    $logPrefix = "createAuthenticatedUser: CO Person $coPersonId: ";
+
     // We only create authenticated users for active CO Person records.
     $status = $provisioningData['CoPerson']['status'];
     if($status != StatusEnum::Active) {
+      $msg = "is not active so will not be provisioned";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -341,11 +348,15 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // We cannot provision an authenticated user without a Dataverse identifier.
     if(is_null($dataverseIdentifier)) {
+      $msg = "has no Dataverse identifier of type $identifierType so will not be provisioned";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
     // Skip over CO person records that are already provisioned.
     if(!empty($this->getAuthenticatedUserByIdentifier($dataverseIdentifier))) {
+      $msg = "is already provisioned";
+      $this->log($logPrefix . $msg);
       return true;
     }
 
@@ -364,6 +375,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // We cannot provision an authenticated user without a persistent user ID.
     if(is_null($persistentUserId)) {
+      $msg = "has no persistent user ID of type $persistentUserIdType so will not be provisioned";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -382,6 +395,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // We cannot provision without name data.
     if(is_null($namei)) {
+      $msg = "has no name data so will not be provisioned";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -401,6 +416,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // We cannot provision without email data.
     if(is_null($emaili)) {
+      $msg = "has no email data so will not be provisioned";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -423,7 +440,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     if(!$isAuthorized) {
-      $this->log("CO Person $coPersonId is not a member of authorization group with type $authGroupType so will not be created");
+      $msg = "is not a member of authorization group with type $authGroupType so will not be created";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -432,12 +450,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $response = $this->Http->post($path, json_encode($authenticatedUser));
 
     if($response->code != 200) {
-      $this->log("Unable to create authenticated user " . print_r($authenticatedUser, true));
-      $this->log("Response from server was " . print_r($response, true));
+      $this->log($logPrefix . "Unable to create authenticated user " . print_r($authenticatedUser, true));
+      $this->log($logPrefix . "Response from server was " . print_r($response, true));
       return false;
     }
 
-    $this->log("CO Person $coPersonId created the dataverse authenticated user " . print_r($authenticatedUser, true));
+    $msg = "created the dataverse authenticated user " . print_r($authenticatedUser, true);
+    $this->log($logPrefix . $msg);
 
     // Record the Dataverse ID for the newly created authenticated user.
     $dataverseId = json_decode($response->body, true)['data']['id'];
@@ -500,10 +519,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   protected function createExplicitGroup($coProvisioningTargetData, $provisioningData) {
+    $logPrefix = "createExplicitGroup: ";
+
     list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($this->coGroupToOwnerDataverse($coProvisioningTargetData, $provisioningData));
 
     if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
-      $this->log($comment);
+      $this->log($logPrefix . $comment);
       return false;
     }
 
@@ -511,7 +532,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $dataverseExplicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
 
     if(!empty($dataverseExplicitGroup)) {
-      $this->log("Dataverse explicit group with alias $explicitGroupAlias already exists");
+      $this->log($logPrefix . "Dataverse explicit group with alias $explicitGroupAlias already exists");
       return true;
     }
 
@@ -525,8 +546,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $response = $this->Http->post($path, json_encode($dataverseExplicitGroup));
 
     if($response->code != 201) {
-      $this->log("Error creating explicit group " . print_r($dataverseExplicitGroup, true));
-      $this->log("Response from server was " . print_r($response, true));
+      $this->log($logPrefix . "Error creating explicit group " . print_r($dataverseExplicitGroup, true));
+      $this->log($logPrefix . "Response from server was " . print_r($response, true));
       return false;
     }
 
@@ -594,6 +615,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   protected function doiToMappedServerHost($doi, $coProvisioningTargetData) {
+    $logPrefix = "doiToMappedServerHost: DOI $doi: ";
+
     $host = null;
     $this->createDoiClient($coProvisioningTargetData);
 
@@ -606,8 +629,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         if($v['type'] == 'URL') {
           $citationUrl = $v['data']['value'];
           $host = parse_url($citationUrl)['host'];
+          $msg = "citation URL $citationUrl mapped to host $host";
+          $this->log($logPrefix . $msg);
         }
       }
+    } else {
+      $msg = "DOI server return code was " . $response->code . " could not determine host";
+      $this->log($logPrefix . $msg);
     }
 
     return $host;
@@ -622,6 +650,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   protected function doiToOwnerDataverseAlias($doi) {
+    $logPrefix = "doiToOwnerDataverseAlias: DOI $doi: ";
+
     $ownerDataverseAlias = null;
 
     $path = "/api/datasets/:persistentId/";
@@ -640,7 +670,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
       if($type == "DATAVERSE" && !empty($identifier)) {
         $ownerDataverseAlias = $identifier;
+        $msg = "owner dataverse alias is $ownerDataverseAlias";
+        $this->log($logPrefix . $msg);
       }
+    } else {
+      $msg = "DOI return code was " . $response->code . " could not determine owner dataverse alias";
+      $this->log($logPrefix . $msg);
     }
 
     return $ownerDataverseAlias;
@@ -656,6 +691,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   protected function getAuthenticatedUserByIdentifier($identifier) {
+    $logPrefix = "getAuthenticatedUserByIdentifier: identifier $identifier: ";
     $authenticatedUser = array();
 
     $path = "/api/admin/authenticatedUsers/" . $identifier;
@@ -664,6 +700,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     if($response->code == 200) {
       $authenticatedUser = json_decode($response->body, true)['data'];
+    } else {
+      $msg = "Dataverse server return code was " . $response->code;
+      $this->log($logPrefix . $msg);
     }
 
     return $authenticatedUser;
@@ -680,6 +719,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
 
   protected function getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias) {
+    $logPrefix = "getDataverseExplicitGroup: owner dataverse alias $ownerDataverseAlias: explicit group alias $explicitGroupAlias: ";
     $dataverseExplicitGroup = array();
 
     $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias";
@@ -688,6 +728,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     if($response->code == 200) {
       $dataverseExplicitGroup = json_decode($response->body, true)['data'];
+    } else {
+      $msg = "Dataverse server return code was " . $response->code;
+      $this->log($logPrefix . $msg);
     }
 
     return $dataverseExplicitGroup;
@@ -719,6 +762,19 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Log output from this provisioner.
+   *
+   * @since COmanage Registry v4.3.5.
+   * @return bool Success of log write.
+   */
+
+  public function log($msg, $type = LOG_ERR, $scope = null) {
+    $prefix = "CoDataverseProvisionerTarget ID " . $this->activeId . ": ";
+
+    return parent::log($prefix . $msg, $type, $scope);
+  }
+
+  /**
    * Provision for the specified CO Person.
    *
    * @since  COmanage Registry v4.3.4
@@ -729,6 +785,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
   
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
+    // Set the ID for this instance for logging.
+    $this->activeId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['id'];
+
     // Initialize HTTP client connection to Dataverse server.
     $this->createHttpClient($coProvisioningTargetData);
 
@@ -789,6 +848,10 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $coProvisioningTargetData = $this->find('first', $args);
 
+    // Set logging details.
+    $this->activeId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['id'];
+    $logPrefix = "status: CO Person $id: ";
+
     // Create HTTP client to connect to Dataverse server.
     $this->createHttpClient($coProvisioningTargetData);
 
@@ -812,7 +875,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       }
 
       if(is_null($dataverseIdentifier)) {
-        $ret['comment'] = "No Identifier of type " . $identifierType . " for CO Person";
+        $msg = "No Identifier of type " . $identifierType . " for CO Person";
+        $ret['comment'] = $msg;
+        $this->log($logPrefix . $msg);
         return $ret;
       }
 
@@ -824,6 +889,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         $ret['status'] = ProvisioningStatusEnum::Provisioned;
         $ret['comment'] = $authenticatedUser['deactivated'] ? "User is deactivated in Dataverse" : "User is active in Dataverse";
         $ret['timestamp'] = $authenticatedUser['createdTime'];
+
+        $this->log($logPrefix . $ret['comment']);
       }
 
       // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget.
@@ -883,6 +950,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
+    $logPrefix = "updateExplicitGroupMembership: CO Person $coPersonId: ";
+
     // Pull the CoPerson record to find the Dataverse Identifier.
     $args = array();
     $args['conditions']['CoPerson.id'] = $coPersonId;
@@ -902,7 +971,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     if(is_null($dataverseIdentifier)) {
-      $this->log("Could not determine dataverse Identifier for CO Person with ID $coPersonId");
+      $msg = "Could not determine dataverse Identifier";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -911,7 +981,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($obj);
 
     if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
-      $this->log("Could not map CO Group to owner dataverse and explicit group alias");
+      $msg = "Could not map CO Group to owner dataverse and explicit group alias";
+      $this->log($logPrefix . $msg);
       return false;
     }
 
@@ -922,17 +993,21 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     if(!empty($provisioningData['CoGroup']['CoGroupMember'])) {
       $response = $this->Http->put($path, $query);
       if($response->code != 200) {
-        $this->log("Error adding membership for CO Person with ID $coPersonId");
-        $this->log("Response from server was " . print_r($response, true));
+        $this->log($logPrefix . "Error adding membership");
+        $this->log($logPrefix . "Response from server was " . print_r($response, true));
         return false;
       }
+      $msg = "added to group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
+      $this->log($logPrefix . $msg);
     } else {
       $response = $this->Http->delete($path, $query);
       if($response->code != 200) {
-        $this->log("Error deleting membership for CO Person with ID $coPersonId");
-        $this->log("Response from server was " . print_r($response, true));
+        $this->log($logPrefix . "Error deleting membership");
+        $this->log($logPrefix . "Response from server was " . print_r($response, true));
         return false;
       }
+      $msg = "removed from group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
+      $this->log($logPrefix . $msg);
     }
 
     return true;
