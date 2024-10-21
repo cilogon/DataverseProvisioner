@@ -407,6 +407,26 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
     $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
 
+    // We only provision a user that is a member of at least one authorization
+    // group, that is a CO Group with an Identifier of the configured type.
+    $isAuthorized = false;
+    $authGroupType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['group_type'];
+
+    foreach ($provisioningData['CoGroupMember'] as $m) {
+      $coGroupIdentifiers = $m['CoGroup']['Identifier'] ?? array();
+      foreach ($coGroupIdentifiers as $i) {
+        $gtype = $i['type'] ?? null;
+        if($gtype == $coProvisioningTargetData['CoDataverseProvisionerTarget']['group_type']) {
+          $isAuthorized = true;
+        }
+      }
+    }
+
+    if(!$isAuthorized) {
+      $this->log("CO Person $coPersonId is not a member of authorization group with type $authGroupType so will not be created");
+      return false;
+    }
+
     // Provision the authenticated user in Dataverse.
     $path = "/api/admin/authenticatedUsers?unblock-key=" . $this->unblockKey;
     $response = $this->Http->post($path, json_encode($authenticatedUser));
@@ -416,6 +436,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $this->log("Response from server was " . print_r($response, true));
       return false;
     }
+
+    $this->log("CO Person $coPersonId created the dataverse authenticated user " . print_r($authenticatedUser, true));
 
     // Record the Dataverse ID for the newly created authenticated user.
     $dataverseId = json_decode($response->body, true)['data']['id'];
@@ -707,16 +729,20 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    */
   
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
-
     // Initialize HTTP client connection to Dataverse server.
     $this->createHttpClient($coProvisioningTargetData);
 
     switch($op) {
-      // We only write users to the Dataverse server once. There is no update.
+      // We only write users to the Dataverse server once but the user must also be
+      // a member of at least one authorization group, identified by having the configured
+      // Identifier type. Since after enrollment/onboarding the user may not be a member
+      // of the authorization group yet, we do take action on CoPersonUpdated to catch
+      // the change in membership.
       case ProvisioningActionEnum::CoPersonAdded:
       case ProvisioningActionEnum::CoPersonPetitionProvisioned:
       case ProvisioningActionEnum::CoPersonPipelineProvisioned:
       case ProvisioningActionEnum::CoPersonReprovisionRequested:
+      case ProvisioningActionEnum::CoPersonUpdated:
         $ret = $this->createAuthenticatedUser($coProvisioningTargetData, $provisioningData);
         break;
       // We only write explicit groups to the Dataverse server once for now.
