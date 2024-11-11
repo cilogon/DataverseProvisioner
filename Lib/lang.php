@@ -43,6 +43,8 @@ $cm_dataverse_provisioner_texts['en_US'] = array(
   // Plugin texts
   'pl.dataverseprovisioner.server'                          => 'Dataverse Server',
   'pl.dataverseprovisioner.server_desc'                     => 'Configured Server object to provision into',
+  'pl.dataverseprovisioner.admin_token'                     => 'Admin API Token',
+  'pl.dataverseprovisioner.admin_token.desc'                => 'API token for authenticating to the /api/admin endpoint',
   'pl.dataverseprovisioner.doi_server'                      => 'DOI Server API',
   'pl.dataverseprovisioner.doi_server_desc'                 => 'Configured Server object for the DOI API',
   'pl.dataverseprovisioner.identifier_type'                 => 'Dataverse Identifier Type',

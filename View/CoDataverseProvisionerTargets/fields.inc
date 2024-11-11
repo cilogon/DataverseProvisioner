@@ -102,6 +102,28 @@
   </li>
   <li>
     <div class="field-name">
+      <?php print ($e ? $this->Form->label('admin_token', _txt('pl.dataverseprovisioner.admin_token')) : _txt('pl.dataverseprovisioner.admin_token')); ?>
+      <span class="required">*</span>
+      <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.admin_token.desc'); ?></div>
+    </div>
+    <div class="field-info">
+      <?php
+        if($e) {
+          print $this->Form->password('admin_token');
+
+          if($this->Form->isFieldError('admin_token')) {
+            print $this->Form->error('admin_token');
+          }
+        } else {
+          if(!empty($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['admin_token'])) {
+            print filter_var($co_dataverse_provisioner_targets[0]['CoDataverseProvisionerTarget']['admin_token'], FILTER_SANITIZE_SPECIAL_CHARS);
+          }
+        }
+      ?>
+    </div>
+  </li>
+  <li>
+    <div class="field-name">
       <?php print ($e ? $this->Form->label('doi_server_id', _txt('pl.dataverseprovisioner.doi_server')) : _txt('pl.dataverseprovisioner.doi_server')); ?>
       <span class="required">*</span>
       <div class="field-desc"><?php print _txt('pl.dataverseprovisioner.doi_server_desc'); ?></div>

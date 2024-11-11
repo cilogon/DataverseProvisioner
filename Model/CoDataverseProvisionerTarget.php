@@ -26,6 +26,7 @@
  */
 
 App::uses("CoProvisionerPluginTarget", "Model");
+App::uses("DataverseHttpClient", "DataverseProvisioner.Lib");
 
 class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   // Define class name for cake
@@ -46,14 +47,11 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   // Request Http servers
   public $cmServerType = ServerEnum::HttpServer;
   
-  // Instance of CoHttpClient for Dataverse server
+  // Instance of DataverseHttpClient for Dataverse server
   protected $Http = null;
 
   // Instance of CoHttpClient for DOI API server
   protected $Doi = null;
-
-  // Dataverse API query string parameter
-  protected $unblockKey = null;
 
   // Active ID used in logging
   protected $activeId;
@@ -70,6 +68,11 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         'required' => true,
         'unfreeze' => 'CO'
       )
+    ),
+    'admin_token' => array(
+      'rule' => 'notBlank',
+      'required' => true,
+      'allowEmpty' => false
     ),
     'doi_server_id' => array(
       'content' => array(
@@ -446,7 +449,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     // Provision the authenticated user in Dataverse.
-    $path = "/api/admin/authenticatedUsers?unblock-key=" . $this->unblockKey;
+    $path = "/api/admin/authenticatedUsers";
     $response = $this->Http->post($path, json_encode($authenticatedUser));
 
     if($response->code != 200) {
@@ -542,7 +545,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $dataverseExplicitGroup["description"] = $provisioningData['CoGroup']['description'];
     $dataverseExplicitGroup["aliasInOwner"] = $explicitGroupAlias;
 
-    $path = "/api/dataverses/" . $ownerDataverseAlias . "/groups" . "?unblock-key=" . $this->unblockKey;
+    $path = "/api/dataverses/" . $ownerDataverseAlias . "/groups";
     $response = $this->Http->post($path, json_encode($dataverseExplicitGroup));
 
     if($response->code != 201) {
@@ -576,19 +579,10 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
       }
 
-      $this->Http = new CoHttpClient();
-      
-      $this->Http->setConfig($srvr['HttpServer']);
-
-      $this->Http->setRequestOptions(array(
-        'header' => array(
-          'Accept'          => 'application/json',
-          'Content-Type'    => 'application/json; charset=UTF-8',
-          'X-Dataverse-key' => $srvr['HttpServer']['password']
-        )
-      ));
-
-      $this->unblockKey = $srvr['HttpServer']['password'];
+      $config = $srvr['HttpServer'];
+      $apiToken = $config['password'];
+      $adminToken = $coProvisioningTargetData['CoDataverseProvisionerTarget']['admin_token'];
+      $this->Http = new DataverseHttpClient($config, $apiToken, $adminToken);
   }
 
   /**
@@ -659,7 +653,6 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $query = array();
     $query['persistentId'] = "doi:" . $doi;
     $query['returnOwners'] = "true";
-    $query['unblock-key'] = $this->unblockKey;
 
     $response = $this->Http->get($path, $query);
 
@@ -695,8 +688,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $authenticatedUser = array();
 
     $path = "/api/admin/authenticatedUsers/" . $identifier;
-    $query = array('unblock-key' => $this->unblockKey);
-    $response = $this->Http->get($path, $query);
+    $response = $this->Http->get($path);
 
     if($response->code == 200) {
       $authenticatedUser = json_decode($response->body, true)['data'];
@@ -723,8 +715,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $dataverseExplicitGroup = array();
 
     $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias";
-    $query = array('unblock-key' => $this->unblockKey);
-    $response = $this->Http->get($path, $query);
+    $response = $this->Http->get($path);
 
     if($response->code == 200) {
       $dataverseExplicitGroup = json_decode($response->body, true)['data'];
@@ -988,10 +979,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // The URL path is the same for adding (PUT) or removing (DELETE).
     $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias/roleAssignees/@$dataverseIdentifier";
-    $query = array('unblock-key' => $this->unblockKey);
 
     if(!empty($provisioningData['CoGroup']['CoGroupMember'])) {
-      $response = $this->Http->put($path, $query);
+      $response = $this->Http->put($path);
       if($response->code != 200) {
         $this->log($logPrefix . "Error adding membership");
         $this->log($logPrefix . "Response from server was " . print_r($response, true));
@@ -1000,7 +990,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $msg = "added to group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
       $this->log($logPrefix . $msg);
     } else {
-      $response = $this->Http->delete($path, $query);
+      $response = $this->Http->delete($path);
       if($response->code != 200) {
         $this->log($logPrefix . "Error deleting membership");
         $this->log($logPrefix . "Response from server was " . print_r($response, true));
