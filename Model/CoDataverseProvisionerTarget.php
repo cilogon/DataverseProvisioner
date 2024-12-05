@@ -455,6 +455,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     if($response->code != 200) {
       $this->log($logPrefix . "Unable to create authenticated user " . print_r($authenticatedUser, true));
       $this->log($logPrefix . "Response from server was " . print_r($response, true));
+
+      // TODO 
+      // Can we query here by email to see if the user already exists in Dataverse, and if so
+      // update COmanage Registry?
+
+
       return false;
     }
 
@@ -695,7 +701,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $response = $this->Http->get($path, $query);
 
     if($response->code == 200) {
-      $authenticatedUser = json_decode($response->body, true)['data'];
+      $users = json_decode($response->body, true)['data']['users'];
+      if(!empty($users)) {
+        if(count($users) == 1) {
+          $authenticatedUser = $users[0];
+        }
+      }
     } else {
       $msg = "Dataverse server return code was " . $response->code;
       $this->log($logPrefix . $msg);
