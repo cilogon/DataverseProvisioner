@@ -675,6 +675,36 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Get Dataverse authenticated user using email
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  String  $email  email address
+   * @return Array   Array of authenticated user details 
+   * @throws RuntimeException
+   */
+
+  protected function getAuthenticatedUserByEmail($email) {
+    $logPrefix = "getAuthenticatedUserByEmail: email $email: ";
+    $authenticatedUser = array();
+
+    $path = "/api/admin/list-users";
+
+    $query = array();
+    $query['searchTerm'] = $email;
+
+    $response = $this->Http->get($path, $query);
+
+    if($response->code == 200) {
+      $authenticatedUser = json_decode($response->body, true)['data'];
+    } else {
+      $msg = "Dataverse server return code was " . $response->code;
+      $this->log($logPrefix . $msg);
+    }
+
+    return $authenticatedUser;
+  }
+
+  /**
    * Get Dataverse authenticated user using Dataverse identifier
    *
    * @since  COmanage Registry v4.3.4
@@ -854,6 +884,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $args['conditions']['CoPerson.id'] = $id;
       $args['contain'] = array();
       $args['contain'][] = 'Identifier';
+      $args['contain'][] = 'EmailAddress';
 
       $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
 
@@ -875,7 +906,30 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       // Query Dataverse server for authenticated user object.
       $authenticatedUser = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
 
-      if(!empty($authenticatedUser)) {
+      if(empty($authenticatedUser)) {
+        $msg = "No authenticated user found with identifier $dataverseIdentifier";
+        $this->log($logPrefix . $msg);
+
+        // See if a user with that email already exists.
+        
+        $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
+        $email = null;
+
+        foreach ($coPerson['EmailAddress'] as $e) {
+          if($e['type'] == $emailType && empty($e['source_email_address_id'])) {
+            $email = $e['mail'];
+            break;
+          }
+        }
+
+        if(!empty($email)) {
+          $user = $this->getAuthenticatedUserByEmail($email);
+
+          if(!empty($user)) {
+            $ret['comment'] = "Provisioning failed, email $email already in Dataverse";
+          }
+        }
+      } else {
         // The user is provisioned.
         $ret['status'] = ProvisioningStatusEnum::Provisioned;
         $ret['comment'] = $authenticatedUser['deactivated'] ? "User is deactivated in Dataverse" : "User is active in Dataverse";
