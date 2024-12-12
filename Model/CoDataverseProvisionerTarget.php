@@ -456,19 +456,43 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $this->log($logPrefix . "Unable to create authenticated user " . print_r($authenticatedUser, true));
       $this->log($logPrefix . "Response from server was " . print_r($response, true));
 
-      // TODO 
-      // Can we query here by email to see if the user already exists in Dataverse, and if so
-      // update COmanage Registry?
+      // Check to see if a user with that email already exists in Dataverse.
+      $m = $authenticatedUser['email'];
+      $existingUser = $this->getAuthenticatedUserByEmail($m);
 
+      if(!empty($existingUser)) {
+        // The user already exists in Dataverse so reconcile the Identifier value.
+        $this->log($logPrefix . "User with email $m already exists in Dataverse");
 
-      return false;
+        $desiredIdentifierValue = $existingUser['userIdentifier'];
+
+        foreach ($provisioningData['Identifier'] as $identifier) {
+          if($identifier['type'] == $identifierType) {
+            $currentIdentifierValue = $identifier['identifier'];
+            break;
+          }
+        }
+
+        $options = array('provision' => false);
+        $this->CoProvisioningTarget->Co->CoPerson->Identifier->id = $identifier['id'];
+        $ret = $this->CoProvisioningTarget->Co->CoPerson->Identifier->saveField('identifier', $desiredIdentifierValue, $options);
+
+        if(!$ret) {
+          $msg = "Unable to change Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
+          $this->log($logPrefix . $msg);
+          return false;
+        } else {
+          $msg = "Changed Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
+          $this->log($logPrefix . $msg);
+          $dataverseId = $existingUser['id'];
+        }
+      }
+    } else {
+      // Record the Dataverse ID for the newly created authenticated user.
+      $dataverseId = json_decode($response->body, true)['data']['id'];
+      $msg = "created the dataverse authenticated user " . print_r($authenticatedUser, true);
+      $this->log($logPrefix . $msg);
     }
-
-    $msg = "created the dataverse authenticated user " . print_r($authenticatedUser, true);
-    $this->log($logPrefix . $msg);
-
-    // Record the Dataverse ID for the newly created authenticated user.
-    $dataverseId = json_decode($response->body, true)['data']['id'];
 
     // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget
     // and reconcile.
