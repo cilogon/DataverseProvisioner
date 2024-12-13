@@ -223,7 +223,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
   protected function addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId) {
     $args = array();
-    $args['Identifier']['identifier'] = $dataverseId;
+    $args['Identifier']['identifier'] = "$coProvisioningTargetId:$dataverseId";
     $args['Identifier']['co_person_id'] = $coPersonId;
     $args['Identifier']['type'] = IdentifierEnum::ProvisioningTarget;
     $args['Identifier']['login'] = false;
