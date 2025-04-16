@@ -448,50 +448,51 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    // Provision the authenticated user in Dataverse.
-    $path = "/api/admin/authenticatedUsers";
-    $response = $this->Http->post($path, json_encode($authenticatedUser));
+    // Check to see if a user with the email already exists in Dataverse.
+    $m = $authenticatedUser['email'];
+    $existingUser = $this->getAuthenticatedUserByEmail($m);
 
-    if($response->code != 200) {
-      $this->log($logPrefix . "Unable to create authenticated user " . print_r($authenticatedUser, true));
-      $this->log($logPrefix . "Response from server was " . print_r($response, true));
+    if(empty($existingUser)) {
+      // Provision the authenticated user in Dataverse.
+      $path = "/api/admin/authenticatedUsers";
+      $response = $this->Http->post($path, json_encode($authenticatedUser));
 
-      // Check to see if a user with that email already exists in Dataverse.
-      $m = $authenticatedUser['email'];
-      $existingUser = $this->getAuthenticatedUserByEmail($m);
-
-      if(!empty($existingUser)) {
-        // The user already exists in Dataverse so reconcile the Identifier value.
-        $this->log($logPrefix . "User with email $m already exists in Dataverse");
-
-        $desiredIdentifierValue = $existingUser['userIdentifier'];
-
-        foreach ($provisioningData['Identifier'] as $identifier) {
-          if($identifier['type'] == $identifierType) {
-            $currentIdentifierValue = $identifier['identifier'];
-            break;
-          }
-        }
-
-        $options = array('provision' => false);
-        $this->CoProvisioningTarget->Co->CoPerson->Identifier->id = $identifier['id'];
-        $ret = $this->CoProvisioningTarget->Co->CoPerson->Identifier->saveField('identifier', $desiredIdentifierValue, $options);
-
-        if(!$ret) {
-          $msg = "Unable to change Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
-          $this->log($logPrefix . $msg);
-          return false;
-        } else {
-          $msg = "Changed Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
-          $this->log($logPrefix . $msg);
-          $dataverseId = $existingUser['id'];
-        }
+      if($response->code != 200) {
+        $msg = "unable to create the dataverse authenticated user " . print_r($authenticatedUser, true);
+        $this->log($logPrefix . $msg);
+        return false;
       }
-    } else {
+
       // Record the Dataverse ID for the newly created authenticated user.
       $dataverseId = json_decode($response->body, true)['data']['id'];
       $msg = "created the dataverse authenticated user " . print_r($authenticatedUser, true);
       $this->log($logPrefix . $msg);
+    } else {
+      // The user already exists in Dataverse so reconcile the Identifier value.
+      $this->log($logPrefix . "User with email $m already exists in Dataverse");
+
+      $desiredIdentifierValue = $existingUser['userIdentifier'];
+
+      foreach ($provisioningData['Identifier'] as $identifier) {
+        if($identifier['type'] == $identifierType) {
+          $currentIdentifierValue = $identifier['identifier'];
+          break;
+        }
+      }
+
+      $options = array('provision' => false);
+      $this->CoProvisioningTarget->Co->CoPerson->Identifier->id = $identifier['id'];
+      $ret = $this->CoProvisioningTarget->Co->CoPerson->Identifier->saveField('identifier', $desiredIdentifierValue, $options);
+
+      if(!$ret) {
+        $msg = "Unable to change Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
+        $this->log($logPrefix . $msg);
+        return false;
+      } else {
+        $msg = "Changed Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
+        $this->log($logPrefix . $msg);
+        $dataverseId = $existingUser['id'];
+      }
     }
 
     // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget
@@ -500,7 +501,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     if(is_null($dataverseIdIdentifier)) {
       $this->addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId);
-    } elseif ($dataverseIdIdentifier['Identifier']['id'] != $dataverseId) {
+    } elseif ($dataverseIdIdentifier['Identifier']['id'] != ($coProvisioningTargetId . ':' . $dataverseId)) {
       $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
       $this->addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId);
     }
@@ -978,12 +979,15 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
       if(!empty($authenticatedUser) && is_null($dataverseIdIdentifier)) {
         $this->addDataverseIdIdentifier($authenticatedUser['id'], $id, $coProvisioningTargetId);
-      } elseif (!empty($authenticatedUser) && ($dataverseIdIdentifier['Identifier']['identifier'] != $authenticatedUser['id'])) {
+      } elseif (!empty($authenticatedUser) && ($dataverseIdIdentifier['Identifier']['identifier'] != ($coProvisioningTargetId . ':' . $authenticatedUser['id']))) {
         $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
         $this->addDataverseIdIdentifier($authenticatedUser['id'], $id, $coProvisioningTargetId);
       } elseif(empty($authenticatedUser) && !is_null($dataverseIdIdentifier)) {
         $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
       }
+
+      return $ret;
+
     } else if ($model->name == 'CoGroup') {
       // Pull the Co Group record.
       $args = array();
