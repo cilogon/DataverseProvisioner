@@ -47,6 +47,26 @@ and `:BlockedApiKey` set. See the Dataverse documentation at
 | owning collection identifier | See notes on displayName | anupoll | |
 | aliasInOwner |  | authorized_doi:10.26193/CI4Z2S | |
 
+### How Registry Objects Work Together  
+
+For each Dataserver to be provisioned the following Registry objects form a "set" and should use
+corresponding names and descriptions when they are created and configured:
+
+- An Extended Identifier type that will hold the Dataverse identifier value for a CO Person record. An example
+  is `adaproddataverse`.
+- An Automatic Identifier Assignment that automatically creates the Identifier of the Extended Identifier type using a rule
+  and attaches it to the CO Person record. An example Automatic Identifier Assignment, rule, and value are
+     - `ADA PROD Dataverse`
+     - `(g:1)(f)[2:(#)]` (first character lowercase from given name prepended to lowercase family name and prepended if
+       necessary with a numerical disambiguator that starts with `2`)
+     - `skoranda7`
+- A Server of Type `HTTP` that holds the URL and API  token necessary to invoke the Dataverse server API. An example
+  is `ADA PROD Dataverse` with URL `https://dataverse.ada.edu.au`.
+- A ProvisioningTarget using plugin `DataverseProvisioner`. An example description is `ADA PROD Dataverse`.
+
+Each instance of the ProvisioningTarget must be configured with a second Server of Type `HTTP` that represents
+a DOI API server. Multiple ProvisioningTarget instances may be configured to use the same DOI Server.
+
 ### Registry CO Group Naming Convention and Dataverse Explicit Group Considerations
 
 In Dataverse a role is a set of permissions and a role may be assigned to an explict group. Each member of the
@@ -151,9 +171,10 @@ record with the Dataverse user.
 
 All plugin configuration must be done as a Registry CO administrator.
 
+
 ### Create Extended Identifier Types
 
-Repeat this step once for each Dataverse server.
+Repeat the steps below once for each Dataverse server.
 
 1. Browse to `Configuration > Extended Types`.
 1. In the drop-down for `For Attribute` choose `Identifier (CO Person, Group)`, which is the default.
@@ -167,9 +188,21 @@ Repeat this step once for each Dataverse server.
 1. For `Status` choose `Active` from the drop-down menu.
 1. Click `ADD`.
 
+Complete the steps below once to create a DOI Identifier type to use with Registry CO Groups.
+
+1. Browse to `Configuration > Extended Types`.
+1. In the drop-down for `For Attribute` choose `Identifier (CO Person, Group)`, which is the default.
+1. Click `FILTER`.
+1. Click `Add Extended Type`.
+1. Verify that the `Attribute` field in the form has value `Identifier (CO Person, Group)`.
+1. In the Name field enter `doi`. 
+1. In the `Display Name` field enter `DOI`.
+1. For `Status` choose `Active` from the drop-down menu.
+1. Click `ADD`.
+
 ### Create Automatic Identifier Assignments
 
-Repeat this step once for each Dataverse server.
+Repeat the steps below once for each Dataverse server.
 
 1. Browse to `Configuration > Identifier Assignments`.
 1. Click `Add Identifier Assignment`.
@@ -194,6 +227,8 @@ Repeat this step once for each Dataverse server.
 
 ### Create the Registry Server Object for A Dataverse Server
 
+Repeat the steps below once for each Dataverse server.
+
 1. Browse to `Servers > Add a New Server`.
 1. Provide a Description for the Server. This is usually a meaningful name, for example
    `Production Dataverse (Australian Data Archive)`.
@@ -209,8 +244,6 @@ Repeat this step once for each Dataverse server.
 1. Tick the box for `Require certificate verification`.
 1. Tick the box for `Require name verification`.
 1. Click `SAVE`.
-
-A Server object should be created and configured for each distinct Dataverse server.
 
 ### Create the Registry Server Object for a DOI Server
 
@@ -233,6 +266,8 @@ Multiple DataverseProvisioner instantiations may use the same DOI API server.
 
 ### Create the Provisioning Target
 
+Repeat the steps below once for each Dataverse server.
+
 1. Browse to `Configuration > Provisioning Targets > Add Provisioning Target`.
 1. Provide a Description for the provisioning target. This is usually a meaningful name, for example
    `Production Dataverse`.
@@ -246,7 +281,19 @@ Multiple DataverseProvisioner instantiations may use the same DOI API server.
 1. For `Admin API Token` enter a valid admin API token suitable for unblocking the `/api/admin` endpoint.
 1. For `DOI Server API` choose a Server object from the drop-down menu that represents a DOI API server to use
    when mapping DOI values to Dataverse server.
-1. For `Dataverse`... 
+1. For `Dataverse Identifier Type` select from the drop-down menu the Identifier of the type configured
+   in the step above "Create Extended Identifier Types".
+1. For `Dataverse Persistent User Identifier Type` select `OIDC sub` from the drop-down menu.
+1. For `Dataverse Name Type` select `Official` from the drop-down menu.
+1. For `Dataverse Email Type` select `Official` from the drop-down menu.
+1. For `Group Identifier Type` select `DOI` from the drop-down menu.
+1. For `Dataverse Authentication Provider ID` enter the value configured by the Dataverse administrator in
+   the Dataverse server.
+1. If operating in testing mode and a DOI server will not be able to map from the DOI to a Dataverse server
+   instance then tick the box for `Skip Dataverse Server Mapping`. This will cause each CO Group representing
+   an explicit group owned by a dataverse to be created in each Dataverse server represented by a
+   provisioning target (instance of the plugin).
+1. Click `SAVE`.
 
 ## Testing
 
