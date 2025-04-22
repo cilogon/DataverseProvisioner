@@ -861,13 +861,20 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       case ProvisioningActionEnum::CoPersonUpdated:
         $ret = $this->createAuthenticatedUser($coProvisioningTargetData, $provisioningData);
         break;
-      // We only write explicit groups to the Dataverse server once for now.
+      case ProvisioningActionEnum::CoGroupAdded:
       case ProvisioningActionEnum::CoGroupReprovisionRequested:
-        $ret = $this->createExplicitGroup($coProvisioningTargetData, $provisioningData);
-        break;
-      // We update explicit group memberships. Updates on CO Group name or description
-      // are currently not supported.
       case ProvisioningActionEnum::CoGroupUpdated:
+        // Always try to create the explicit group since the method createExplicitGroup
+        // will query the Dataverse server first to see if the group already exists
+        // and take no action if it does exist.
+        //
+        // We do this because attaching the Identifier holding the DOI to the CO Group
+        // does NOT invoke provisioning. So we rely on either the REST API call
+        // doing another save to "update" the CO Group or the UI/UX doing it
+        // or invoking a reprovision.
+        $this->createExplicitGroup($coProvisioningTargetData, $provisioningData);
+        // We update explicit group memberships. Updates on CO Group name or description
+        // are currently not supported.
         $ret = $this->updateExplicitGroupMembership($coProvisioningTargetData, $provisioningData);
         break;
       default:
