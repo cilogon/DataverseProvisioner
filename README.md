@@ -126,8 +126,9 @@ and so configuration (see below) requires both an API token and an Admin API tok
    expunged or the Status is set to anything other than Active.
 
 - The plugin only takes action on the following CO Group events in Registry:
+   - CoGroupAdded
+   - CoGroupUpdated
    - CoGroupReprovisionRequested
-   - GoGroupUpdated
 
    All other provisioner events are ignored by the plugin.
 
@@ -166,6 +167,16 @@ and synchronization for an existing Dataverse user with the same email address
 to fail. When that happens manual intervention by the Dataverse admin and the
 Registry CO admin will be required to effectively synchronize the CO Person
 record with the Dataverse user.
+
+- The plugin does not support updates for CO Group names or descriptions. Once the
+  explicit group is created in Dataverse it cannot be changed or deleted.
+
+- The plugin will process CoGroupUpdated events, however, in order to try and
+  create an explicit group after an Identifier with the correct type has been
+  attached to a CO Group. So effectively explicit groups are only created in Dataverse
+  due to a CoGroupUpdated or CoGroupReprovisionRequested operation and not for
+  CoGroupAdded operations, unless the CO Group and Identifier are created in one
+  single transaction (which is usually not the case when creating using the REST API v1).
 
 ## Configuration
 
@@ -296,4 +307,3 @@ Repeat the steps below once for each Dataverse server.
 1. Click `SAVE`.
 
 ## Testing
-
