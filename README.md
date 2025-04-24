@@ -17,10 +17,17 @@ The current version of the plugin targets Dataverse version 6.2.
 
 ### Dataverse Server Configuration
 
-Manipulating Dataverse people and explicit group objects requires use of the Dataverse API
-and so the Dataverse server should be configured with `:BlockedApiPolicy` set to `unblock-key`
-and `:BlockedApiKey` set. See the Dataverse documentation at
-[https://guides.dataverse.org/en/6.2/installation/config.html#blockedapipolicy](https://guides.dataverse.org/en/6.2/installation/config.html#blockedapipolicy).
+Manipulating Dataverse people and explicit group objects requires use of the Dataverse API.
+
+The Dataverse API has both a public and admin component. The admin component is blocked from
+external access by default, so the Dataverse server should be configured
+with `:BlockedApiPolicy` set to `unblock-key` and `:BlockedApiKey` set. See the Dataverse documentation at
+[https://guides.dataverse.org/en/6.2/installation/config.html#blockedapipolicy](https://guides.dataverse.org/en/6.2/installation/config.html#blockedapipolicy). The provisioner refers to this unblock key as the "Admin API Token".
+
+In addition, an API token needs to be generated and linked with a Dataverse user that has permissions
+to create and view explicit groups in all dataverses that the provisioner will need access to. To generate an
+API token, see the Dataverse documentation at
+[https://guides.dataverse.org/en/latest/user/account.html#api-token](https://guides.dataverse.org/en/latest/user/account.html#api-token). The provisioner refers to this API token as the "API token"
 
 ### Mapping Between Dataverse and Registry Objects
 
