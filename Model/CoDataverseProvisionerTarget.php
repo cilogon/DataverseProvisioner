@@ -254,9 +254,34 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     // Find the Dataverse group Identifier for the CO Group which holds the DOI.
     $doi = null;
-    foreach($coGroup['Identifier'] as $identifier) {
+    $doiSuffix = null;
+    $identifiers = array();
+
+    if(!empty($coGroup['Identifier'])) {
+      $identifiers = $coGroup['Identifier'];
+    } elseif(!empty($coGroup['CoGroup']['Identifier'])) {
+      $identifiers = $coGroup['CoGroup']['Identifier'];
+    }
+
+    foreach($identifiers as $identifier) {
       if ($identifier['type'] == $groupIdentifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
-        $doi = $identifier['identifier'];
+        $rawIdentifier = $identifier['identifier'];
+
+        $dashPos = strrpos($rawIdentifier, '-');
+        if($dashPos !== false) {
+          $candidateSuffix = substr($rawIdentifier, $dashPos+1);
+
+          if($candidateSuffix !== '' && strpos($candidateSuffix, '-') === false) {
+            $doiSuffix = $candidateSuffix;
+            $doi = substr($rawIdentifier, 0, $dashPos);
+          } else {
+            $doi = $rawIdentifier;
+          }
+        } else {
+          $doi = $rawIdentifier;
+        }
+
+        break;
       }
     }
 
@@ -308,7 +333,17 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $ret['ownerDataverseAlias'] = $this->doiToOwnerDataverseAlias($doi);
 
     // The group alias in the owning dataverse/collection is constructed from the DOI.
-    $ret['explicitGroupAlias'] = "authorized_" . str_replace(array(".", "/"), array("_", "_"), $doi);
+    $alias = "authorized_" . str_replace(array(".", "/"), array("_", "_"), $doi);
+
+    if(!empty($doiSuffix)) {
+      $sanitizedSuffix = strtolower(preg_replace('/[^A-Za-z0-9_]/', '_', $doiSuffix));
+
+      if(strlen($sanitizedSuffix) > 0) {
+        $alias = $alias . '_' . $sanitizedSuffix;
+      }
+    }
+
+    $ret['explicitGroupAlias'] = $alias;
 
     return $ret;
   }
@@ -1017,8 +1052,14 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $dataverseExplicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
 
       if(!empty($dataverseExplicitGroup)) {
-        $ret['status'] = ProvisioningStatusEnum::Provisioned;
-        $ret['comment'] = "Owner dataverse alias is $ownerDataverseAlias";
+        $displayName = $dataverseExplicitGroup['displayName'] ?? null;
+
+        if(!is_null($displayName) && trim($displayName) === trim($coGroup['CoGroup']['name'])) {
+          $ret['status'] = ProvisioningStatusEnum::Provisioned;
+          $ret['comment'] = "Owner dataverse alias is $ownerDataverseAlias";
+        } else {
+          $ret['comment'] = "Explicit group alias $explicitGroupAlias exists but display name does not match Registry group";
+        }
       }
     }
 

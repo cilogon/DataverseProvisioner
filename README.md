@@ -98,6 +98,19 @@ The naming convention for CO Groups is
 <dataverse name>-doi:<DOI>
 ```
 
+It is common to append a trailing suffix after the DOI to distinguish access modes
+or other variants, for example `-Restricted`, `-General`, or any other single token
+without additional dashes. When present, the provisioner strips that final
+`-<suffix>` before looking up the DOI so both `ANU Poll-doi:10.12345/XYZ`
+and `ANU Poll-doi:10.12345/XYZ-Restricted` resolve to the same dataset.
+The Dataverse explicit group alias is generated as
+`authorized_<doi>` and, when a suffix is present, extended to
+`authorized_<doi>_<suffix>`, where the suffix is lowercased and non-alphanumeric
+characters are converted to underscores. This keeps each access variant distinct
+while still mapping to the same DOI owners.
+Provisioned groups created before this change may use the shorter alias; if so,
+reprovision or adjust the Dataverse explicit group to match the new naming rule.
+
 Also note that the convention is that the CO Group has an attached Identifier
 of the configured DOI type that holds the DOI (value only, no prefix string 'doi').
 
@@ -184,6 +197,10 @@ record with the Dataverse user.
   due to a CoGroupUpdated or CoGroupReprovisionRequested operation and not for
   CoGroupAdded operations, unless the CO Group and Identifier are created in one
   single transaction (which is usually not the case when creating using the REST API v1).
+- When evaluating provisioning status for a CO Group the plugin now confirms that the
+  Dataverse explicit group’s display name matches the Registry CO Group name. If the alias
+  exists but the display name differs, status reports the mismatch instead of marking the
+  group as provisioned.
 
 ## Configuration
 
