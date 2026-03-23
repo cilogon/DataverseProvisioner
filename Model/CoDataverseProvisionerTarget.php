@@ -717,7 +717,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $path = "/api/datasets/:persistentId/";
 
     $query = array();
-    $query['persistentId'] = "doi:" . $doi;
+    // Check if the DOI starts with the "doi:" prefix and add it if not.
+    if (str_starts_with($doi, "doi:")) {
+      $query['persistentId'] = $doi;
+    } else {
+      $query['persistentId'] = "doi:" . $doi;
+    }    
     $query['returnOwners'] = "true";
 
     $response = $this->Http->get($path, $query);
