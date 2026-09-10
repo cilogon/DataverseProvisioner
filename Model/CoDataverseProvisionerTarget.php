@@ -392,11 +392,53 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     // Skip over CO person records that are already provisioned.
+    /*
     if(!empty($this->getAuthenticatedUserByIdentifier($dataverseIdentifier))) {
       $msg = "is already provisioned";
       $this->log($logPrefix . $msg);
       return true;
+    }  
+    */
+
+    // Check for user by EmailAddress before checking for user by dataverseIdentifier.
+    // Find the EmailAddress data.
+    $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
+    $emaili = null;
+
+    foreach ($provisioningData['EmailAddress'] as $i => $email) {
+      if($email['type'] == $emailType && empty($email['source_email_address_id'])) {
+        $emaili = $i;
+        break;
+      }
     }
+
+    // We cannot provision without email data.
+    if(is_null($emaili)) {
+      $msg = "has no email data so will not be provisioned";
+      $this->log($logPrefix . $msg);
+      return false;
+    }
+
+    $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
+    $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
+
+    // Check to see if a user with the email already exists in Dataverse.
+    $m = $authenticatedUser['email'];
+    $existingUser = $this->getAuthenticatedUserByEmail($m);
+
+    if(!empty($existingUser)) {
+        // user with email address in dataverse, do identifers match?
+        $existingUserByIdentifier = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
+        if ($dataverseIdentifier == $existingUserByIdentifier['id']) {
+            // EmailAddress and dataverseIdentifier are a match.
+            // Skip over CO person records that are already provisioned.
+            $msg = "is already provisioned";
+            $this->log($logPrefix . $msg);
+            return true;
+        }
+    }
+    // Provision the authenticated user in Dataverse later.
+    // Reconcile dataverseIdentifier values later if different.
 
     $authenticatedUser['identifier'] = $dataverseIdentifier;
 
@@ -441,7 +483,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $authenticatedUser['firstName'] = $provisioningData['Name'][$namei]['given'] ?? 'none';
     $authenticatedUser['lastName'] = $provisioningData['Name'][$namei]['family'] ?? 'none';
 
-    // Find the EmailAddress data.
+    /* 
+    // Find the EmailAddress data.   <---
     $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
     $emaili = null;
 
@@ -452,7 +495,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       }
     }
 
-    // We cannot provision without email data.
+    // We cannot provision without email data.  <---
     if(is_null($emaili)) {
       $msg = "has no email data so will not be provisioned";
       $this->log($logPrefix . $msg);
@@ -461,6 +504,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
     $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
+    */
 
     // We only provision a user that is a member of at least one authorization
     // group, that is a CO Group with an Identifier of the configured type.
@@ -484,8 +528,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     // Check to see if a user with the email already exists in Dataverse.
-    $m = $authenticatedUser['email'];
-    $existingUser = $this->getAuthenticatedUserByEmail($m);
+    // $m = $authenticatedUser['email'];
+    // $existingUser = $this->getAuthenticatedUserByEmail($m);
 
     if(empty($existingUser)) {
       // Provision the authenticated user in Dataverse.
