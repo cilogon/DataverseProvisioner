@@ -427,15 +427,15 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $existingUser = $this->getAuthenticatedUserByEmail($m);
 
     if(!empty($existingUser)) {
-        // user with email address in dataverse, do identifers match?
-        $existingUserByIdentifier = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
-        if ($dataverseIdentifier == $existingUserByIdentifier['id']) {
-            // EmailAddress and dataverseIdentifier are a match.
-            // Skip over CO person records that are already provisioned.
-            $msg = "is already provisioned";
-            $this->log($logPrefix . $msg);
-            return true;
-        }
+      // user with email address in dataverse, do identifers match?
+      $existingUserByIdentifier = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
+      if(!empty($existingUserByIdentifier)) {
+        // EmailAddress and dataverseIdentifier are a match.
+        // Skip over CO person records that are already provisioned.
+        $msg = "is already provisioned";
+        $this->log($logPrefix . $msg);
+        return true;
+      }
     }
     // Provision the authenticated user in Dataverse later.
     // Reconcile dataverseIdentifier values later if different.
@@ -528,8 +528,8 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     // Check to see if a user with the email already exists in Dataverse.
-    // $m = $authenticatedUser['email'];
-    // $existingUser = $this->getAuthenticatedUserByEmail($m);
+    $m = $authenticatedUser['email'];
+    $existingUser = $this->getAuthenticatedUserByEmail($m);
 
     if(empty($existingUser)) {
       // Provision the authenticated user in Dataverse.
