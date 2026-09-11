@@ -437,8 +437,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         return true;
       }
     }
-    // Provision the authenticated user in Dataverse later.
-    // Reconcile dataverseIdentifier values later if different.
+    // If no user found in Dataverse by email or dataverseid, continue provisioning checks.
 
     $authenticatedUser['identifier'] = $dataverseIdentifier;
 
@@ -483,8 +482,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $authenticatedUser['firstName'] = $provisioningData['Name'][$namei]['given'] ?? 'none';
     $authenticatedUser['lastName'] = $provisioningData['Name'][$namei]['family'] ?? 'none';
 
-    /* 
-    // Find the EmailAddress data.   <---
+    // Find the EmailAddress data.
     $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
     $emaili = null;
 
@@ -495,7 +493,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       }
     }
 
-    // We cannot provision without email data.  <---
+    // We cannot provision without email data.
     if(is_null($emaili)) {
       $msg = "has no email data so will not be provisioned";
       $this->log($logPrefix . $msg);
@@ -504,8 +502,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
     $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
-    */
-
+    
     // We only provision a user that is a member of at least one authorization
     // group, that is a CO Group with an Identifier of the configured type.
     $isAuthorized = false;
