@@ -1012,6 +1012,56 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
       $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
 
+      // Find the email address.
+      
+      $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
+      $email = null;
+
+      foreach ($coPerson['EmailAddress'] as $e) {
+        if($e['type'] == $emailType && empty($e['source_email_address_id'])) {
+          $email = $e['mail'];
+          break;
+        }
+      }
+
+      if(!empty($email)) {
+        $user = $this->getAuthenticatedUserByEmail($email);
+
+        if(!empty($user)) {
+          $ret['comment'] = "Provisioning failed, email $email already in Dataverse";
+        } else {
+            // Find the Dataverse identifier.
+            $dataverseIdentifier = null;
+            foreach($coPerson['Identifier'] as $identifier) {
+              if($identifier['type'] == $identifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
+                $dataverseIdentifier = $identifier['identifier'];
+              }
+            }
+
+            if(is_null($dataverseIdentifier)) {
+              $msg = "No Identifier of type " . $identifierType . " for CO Person";
+              $ret['comment'] = $msg;
+              $this->log($logPrefix . $msg);
+              return $ret;
+            }
+            // Query Dataverse server for authenticated user object.
+
+            $authenticatedUser = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
+            if(empty($authenticatedUser)) {
+              $msg = "No authenticated user found with identifier $dataverseIdentifier";
+              $this->log($logPrefix . $msg);
+            } else {
+              // The user is provisioned.
+              $ret['status'] = ProvisioningStatusEnum::Provisioned;
+              $ret['comment'] = $authenticatedUser['deactivated'] ? "User is deactivated in Dataverse" : "User is active in Dataverse";
+              $ret['timestamp'] = $authenticatedUser['createdTime'];
+
+              $this->log($logPrefix . $ret['comment']);
+            }
+        }
+      }
+
+/*
       // Find the Dataverse identifier.
       $dataverseIdentifier = null;
       foreach($coPerson['Identifier'] as $identifier) {
@@ -1061,7 +1111,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
         $this->log($logPrefix . $ret['comment']);
       }
-
+*/
       // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget.
       $dataverseIdIdentifier = $this->getDataverseIdIdentifier($id, $coProvisioningTargetId);
 
