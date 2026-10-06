@@ -223,6 +223,19 @@ class DataverseOwnership {
   }
 
   /**
+   * Format the Identifier value of a link made before the ownership rules.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Integer $coProvisioningTargetId Provisioning Target ID
+   * @param  Integer $dataverseId            Dataverse account id
+   * @return String  Identifier value
+   */
+
+  public static function formatPrefixLink($coProvisioningTargetId, $dataverseId) {
+    return $coProvisioningTargetId . ':' . $dataverseId;
+  }
+
+  /**
    * List the ways a CO Group identifier may be read as a DOI, in the order
    * they should be tried: the full identifier first, then the identifier
    * with a trailing "-<suffix>" removed.

@@ -244,7 +244,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $this->createHttpClient($coProvisioningTargetData);
 
     $cfg = $coProvisioningTargetData['CoDataverseProvisionerTarget'];
-    $coId = $this->CoProvisioningTarget->field('co_id', array('CoProvisioningTarget.id' => $cfg['co_provisioning_target_id']));
+    $coId = $this->coIdForTarget($coProvisioningTargetData);
 
     $args = array();
     $args['conditions']['CoGroup.co_id'] = $coId;
@@ -255,14 +255,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $people = array();
 
     foreach($coGroups as $coGroup) {
-      $isDoiGroup = false;
-      foreach($coGroup['Identifier'] as $i) {
-        if($i['type'] == $cfg['group_type'] && $i['status'] == SuspendableStatusEnum::Active) {
-          $isDoiGroup = true;
-        }
-      }
-
-      if(!$isDoiGroup) {
+      if(!$this->hasActiveGroupIdentifier($coGroup['Identifier'], $cfg['group_type'])) {
         continue;
       }
 
@@ -300,15 +293,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         $coPersonId = $m['CoGroupMember']['co_person_id'];
 
         if(!isset($people[$coPersonId])) {
-          $args = array();
-          $args['conditions']['CoPerson.id'] = $coPersonId;
-          $args['contain'] = array('Identifier', 'EmailAddress');
-
-          $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
-
-          $facts = $this->personFacts($coProvisioningTargetData,
-                                      $coPerson['Identifier'] ?? array(),
-                                      $coPerson['EmailAddress'] ?? array());
+          $facts = $this->loadPersonFacts($coProvisioningTargetData, $coPersonId);
 
           $people[$coPersonId] = array('facts' => $facts, 'resolved' => null);
 
@@ -365,7 +350,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @since  COmanage Registry v4.3.4
    * @param  Array $coProvisioningTargetData CO Provisioning Target data
    * @param  Array $coGroup                  CO Group data
-   * @return Array array of owner dataverse, explicit group alias, and comment on error
+   * @return Array array of owner dataverse, explicit group alias, and comment on error                         
    * @throws InvalidArgumentException
    */
 
@@ -483,6 +468,20 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Find the CO of a provisioning target.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @return Integer CO ID
+   */
+
+  protected function coIdForTarget($coProvisioningTargetData) {
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
+
+    return $this->CoProvisioningTarget->field('co_id', array('CoProvisioningTarget.id' => $coProvisioningTargetId));
+  }
+
+  /**
    * Provision the Dataverse authenticated user for a CO Person.
    *
    * A Dataverse account is linked to the CO Person only when it is shown to
@@ -496,7 +495,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @throws RuntimeException
    * @return boolean          true when the CO Person has a trusted link
    */
-
+  
   protected function createAuthenticatedUser($coProvisioningTargetData, $provisioningData) {
     $coPersonId = $provisioningData['CoPerson']['id'];
     $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
@@ -634,14 +633,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         continue;
       }
 
-      $hasDoi = false;
-      foreach ($m['CoGroup']['Identifier'] ?? array() as $i) {
-        if(($i['type'] ?? null) == $authGroupType && ($i['status'] ?? null) == SuspendableStatusEnum::Active) {
-          $hasDoi = true;
-        }
-      }
-
-      if($hasDoi) {
+      if($this->hasActiveGroupIdentifier($m['CoGroup']['Identifier'] ?? array(), $authGroupType)) {
         $coGroup = array(
           'CoGroup'    => $m['CoGroup'],
           'Identifier' => $m['CoGroup']['Identifier']
@@ -675,9 +667,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       if(empty($srvr)) {
         throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
       }
-
+      
       $this->Doi = new CoHttpClient();
-
+      
       $this->Doi->setConfig($srvr['HttpServer']);
 
       $this->Doi->setRequestOptions(array(
@@ -694,13 +686,18 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @since  COmanage Registry v4.3.4
    * @param  Array                  $coProvisioningTargetData CO Provisioning Target data
    * @param  Array                  $provisioningData         Provisioning data, populated with ['CoGroup']
+   * @param  Array                  $mapping                  Result of coGroupToOwnerDataverse() when already known
    * @return Boolean True on success
    */
 
-  protected function createExplicitGroup($coProvisioningTargetData, $provisioningData) {
+  protected function createExplicitGroup($coProvisioningTargetData, $provisioningData, $mapping = null) {
     $logPrefix = "createExplicitGroup: ";
 
-    list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($this->coGroupToOwnerDataverse($coProvisioningTargetData, $provisioningData));
+    if(is_null($mapping)) {
+      $mapping = $this->coGroupToOwnerDataverse($coProvisioningTargetData, $provisioningData);
+    }
+
+    list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($mapping);
 
     if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
       $this->log($logPrefix . $comment);
@@ -732,7 +729,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     return true;
   }
-
+  
   /**
    * Create HTTP client connected to Dataverse server
    *
@@ -827,7 +824,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $query['persistentId'] = $doi;
     } else {
       $query['persistentId'] = "doi:" . $doi;
-    }
+    }    
     $query['returnOwners'] = "true";
 
     $response = $this->Http->get($path, $query);
@@ -913,7 +910,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * Get a dataverse explicit group.
    *
    * @since  COmanage Registry v4.3.4
-   * @param  String $ownerDataverseAlias owner dataverse alias
+   * @param  String $ownerDataverseAlias owner dataverse alias 
    * @param  String $explicitGroupAlias  explicit group alias
    * @return Array explicit group object
    */
@@ -981,7 +978,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    if(!$this->createExplicitGroup($coProvisioningTargetData, $coGroup)) {
+    if(!$this->createExplicitGroup($coProvisioningTargetData, $coGroup, $obj)) {
       return false;
     }
 
@@ -997,6 +994,25 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $this->log($logPrefix . "added @$username to group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias");
     return true;
+  }
+
+  /**
+   * Determine whether a CO Group carries an Active Identifier of the given type.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $identifiers CO Group Identifiers
+   * @param  String  $type        Identifier type
+   * @return Boolean True if such an Identifier is present
+   */
+
+  protected function hasActiveGroupIdentifier($identifiers, $type) {
+    foreach($identifiers as $i) {
+      if(($i['type'] ?? null) == $type && ($i['status'] ?? null) == SuspendableStatusEnum::Active) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -1137,7 +1153,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $args['conditions']['Identifier.status'] = SuspendableStatusEnum::Active;
     $args['conditions']['Identifier.identifier'] = array(
       DataverseOwnership::formatLink($coProvisioningTargetId, $dataverseId),
-      "$coProvisioningTargetId:$dataverseId"
+      DataverseOwnership::formatPrefixLink($coProvisioningTargetId, $dataverseId)
     );
     $args['conditions']['Identifier.co_person_id !='] = $excludeCoPersonId;
     $args['contain'] = false;
@@ -1163,6 +1179,27 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $prefix = "CoDataverseProvisionerTarget ID " . $this->activeId . ": ";
 
     return parent::log($prefix . $msg, $type, $scope);
+  }
+
+  /**
+   * Load a CO Person and gather the attributes the ownership rules use.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Integer $coPersonId               CO Person ID
+   * @return Array   CO Person facts from personFacts()
+   */
+
+  protected function loadPersonFacts($coProvisioningTargetData, $coPersonId) {
+    $args = array();
+    $args['conditions']['CoPerson.id'] = $coPersonId;
+    $args['contain'] = array('Identifier', 'EmailAddress');
+
+    $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
+
+    return $this->personFacts($coProvisioningTargetData,
+                              $coPerson['Identifier'] ?? array(),
+                              $coPerson['EmailAddress'] ?? array());
   }
 
   /**
@@ -1255,7 +1292,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @param  Array                  $provisioningData         Provisioning data, populated with ['CoPerson'] or ['CoGroup']
    * @return Boolean True on success
    */
-
+  
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
     // Set the ID for this instance for logging.
     $this->activeId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['id'];
@@ -1450,18 +1487,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     if($model->name == 'CoPerson') {
       $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
 
-      // Pull the CO Person record.
-      $args = array();
-      $args['conditions']['CoPerson.id'] = $id;
-      $args['contain'] = array();
-      $args['contain'][] = 'Identifier';
-      $args['contain'][] = 'EmailAddress';
-
-      $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
-
-      $facts = $this->personFacts($coProvisioningTargetData,
-                                  $coPerson['Identifier'] ?? array(),
-                                  $coPerson['EmailAddress'] ?? array());
+      $facts = $this->loadPersonFacts($coProvisioningTargetData, $id);
 
       if(is_null($facts['username'])) {
         $ret['comment'] = "No Identifier of type " . $identifierType . " for CO Person";
@@ -1542,7 +1568,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
-    $coId = $this->CoProvisioningTarget->field('co_id', array('CoProvisioningTarget.id' => $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id']));
+    $coId = $this->coIdForTarget($coProvisioningTargetData);
 
     $Identifier = $this->CoProvisioningTarget->Co->CoPerson->Identifier;
 
@@ -1593,7 +1619,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @param  Array $provisioningData         Provisioning data, populated with ['CoPerson'] and ['CoGroup']
    * @return Boolean True on success
    */
-
+  
   protected function updateExplicitGroupMembership($coProvisioningTargetData, $provisioningData) {
     // We only operate on CO Group updates that include membership updates.
     $coPersonId = $provisioningData['CoGroup']['CoPerson']['id'] ?? null;
@@ -1604,18 +1630,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $logPrefix = "updateExplicitGroupMembership: CO Person $coPersonId: ";
     $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
-    // Pull the CoPerson record to find the Dataverse Identifier and email.
-    $args = array();
-    $args['conditions']['CoPerson.id'] = $coPersonId;
-    $args['contain'] = array();
-    $args['contain'][] = 'Identifier';
-    $args['contain'][] = 'EmailAddress';
-
-    $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
-
-    $facts = $this->personFacts($coProvisioningTargetData,
-                                $coPerson['Identifier'] ?? array(),
-                                $coPerson['EmailAddress'] ?? array());
+    $facts = $this->loadPersonFacts($coProvisioningTargetData, $coPersonId);
 
     if(is_null($facts['username'])) {
       $msg = "Could not determine dataverse Identifier";

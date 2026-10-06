@@ -197,6 +197,7 @@ class DataverseOwnershipTest extends TestCase {
 
   public function testFormatLink() {
     $this->assertSame('12:345:v2', DataverseOwnership::formatLink(12, 345));
+    $this->assertSame('12:345', DataverseOwnership::formatPrefixLink(12, 345));
   }
 
   public function testDoiInterpretationsTryTheFullIdentifierFirst() {
