@@ -232,9 +232,14 @@ status) when
 - the account's username is the Registry Identifier of another CO Person, or
 - a link made by an earlier version of the plugin fails the rules above.
 
+Viewing the CO Person's provisioning status re-checks these conditions
+without changing anything and names the conflict. A failed account creation
+cannot be re-checked that way, so status then points to the Registry log.
+
 A CO Group membership removal for a CO Person without a trusted link is not
 sent to Dataverse, because the earlier grant may sit on another person's
-account. The log notes this; the audit below finds such memberships.
+account. The log and the provisioning status note this; the audit below finds
+such memberships.
 
 To resolve a username conflict, change the CO Person's Identifier of the
 configured Dataverse Identifier type to an unused value and request

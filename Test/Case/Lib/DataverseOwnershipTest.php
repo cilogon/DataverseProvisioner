@@ -113,8 +113,72 @@ class DataverseOwnershipTest extends TestCase {
 
     $result = DataverseOwnership::classify($this->person(array('emailVerified' => false)), null, array($emailAccount));
 
-    $this->assertNotSame(DataverseOwnership::OUTCOME_OWNED, $result['outcome']);
+    $this->assertSame(DataverseOwnership::OUTCOME_CREATE, $result['outcome']);
     $this->assertTrue($result['skippedUnverifiedEmail']);
+    $this->assertNull(DataverseOwnership::ownsAccount($this->person(array('emailVerified' => false)), $emailAccount));
+  }
+
+  public function testUnverifiedEmailOnAnotherPersonsUsernameAccountIsAConflict() {
+    // The account at the username carries the CO Person's email, but the email is unverified.
+    $account = $this->account(array('email' => 'b.person@example.org'));
+
+    $result = DataverseOwnership::classify($this->person(array('emailVerified' => false)), $account, array($account));
+
+    $this->assertSame(DataverseOwnership::OUTCOME_CONFLICT, $result['outcome']);
+    $this->assertSame('RNadal', $result['conflictUsername']);
+    $this->assertTrue($result['skippedUnverifiedEmail']);
+  }
+
+  public function testEmptyLoginFactsNeverMatch() {
+    $account = $this->account(array('persistentUserId' => null, 'authenticationProviderId' => ''));
+
+    $this->assertNull(DataverseOwnership::ownsAccount($this->person(array('persistentUserId' => null)), $account));
+    $this->assertNull(DataverseOwnership::ownsAccount($this->person(array('providerId' => '', 'persistentUserId' => null)), $account));
+  }
+
+  /**
+   * Cases for resolveLinkState: link value, account at the username, and whether it is the CO Person's.
+   */
+
+  public static function linkStateCases() {
+    $owned = array('id' => 42, 'identifier' => '@RNadal', 'email' => 'b.person@example.org',
+                   'authenticationProviderId' => self::PROVIDER, 'persistentUserId' => 'http://cilogon.org/serverT/users/111');
+    $other = array('id' => 42, 'identifier' => '@RNadal', 'email' => 'a.person@example.org',
+                   'authenticationProviderId' => self::PROVIDER, 'persistentUserId' => 'http://cilogon.org/serverT/users/999');
+    $elsewhere = array_merge($owned, array('id' => 43));
+
+    return array(
+      'trusted, same account'            => array('12:42:v2', $owned, DataverseOwnership::STATE_TRUSTED),
+      'trusted, same account not owned'  => array('12:42:v2', $other, DataverseOwnership::STATE_TRUSTED),
+      'trusted, different account'       => array('12:42:v2', $elsewhere, DataverseOwnership::STATE_CONFLICT),
+      'trusted, username free'           => array('12:42:v2', null, DataverseOwnership::STATE_CONFLICT),
+      'prefix, same account owned'       => array('12:42', $owned, DataverseOwnership::STATE_PREFIX),
+      'prefix, same account not owned'   => array('12:42', $other, DataverseOwnership::STATE_CONFLICT),
+      'prefix, different account'        => array('12:42', $elsewhere, DataverseOwnership::STATE_CONFLICT),
+      'prefix, username free'            => array('12:42', null, DataverseOwnership::STATE_CONFLICT),
+      'none, account not owned'          => array(null, $other, DataverseOwnership::STATE_CONFLICT),
+      'none, account owned'              => array(null, $owned, DataverseOwnership::STATE_NONE),
+      'none, username free'              => array(null, null, DataverseOwnership::STATE_NONE)
+    );
+  }
+
+  #[PHPUnit\Framework\Attributes\DataProvider('linkStateCases')]
+  public function testResolveLinkState($linkValue, $usernameAccount, $expectedState) {
+    $link = DataverseOwnership::parseLink($linkValue, 12);
+
+    $result = DataverseOwnership::resolveLinkState($this->person(), $link, $usernameAccount);
+
+    $this->assertSame($expectedState, $result['state']);
+
+    if($expectedState == DataverseOwnership::STATE_TRUSTED || $expectedState == DataverseOwnership::STATE_PREFIX) {
+      $this->assertSame($usernameAccount, $result['account']);
+    } else {
+      $this->assertNull($result['account']);
+    }
+
+    if($expectedState == DataverseOwnership::STATE_CONFLICT) {
+      $this->assertStringStartsWith('Conflict:', $result['comment']);
+    }
   }
 
   public function testPrefixEmailMatchDoesNotOwn() {

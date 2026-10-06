@@ -52,6 +52,13 @@ class DataverseOwnership {
   // Suffix marking a link made under the ownership rules
   const LINK_VERSION = 'v2';
 
+  // States of a CO Person's link resolved against Dataverse
+  const STATE_TRUSTED = 'trusted';
+  const STATE_PREFIX = 'prefix';
+  const STATE_CONFLICT = 'conflict';
+  const STATE_NONE = 'none';
+  const STATE_ERROR = 'error';
+
   /**
    * Decide which Dataverse account, if any, belongs to a CO Person.
    *
@@ -207,6 +214,56 @@ class DataverseOwnership {
     }
 
     return $none;
+  }
+
+  /**
+   * Decide what a CO Person's stored link means, given the account currently
+   * at their Registry username.
+   *
+   * Dataverse cannot look an account up by its numeric id, so a link is
+   * resolved through the account at the CO Person's username: a trusted link
+   * holds only while that account has the linked id, and a link made before
+   * the ownership rules must also pass them.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array $person          CO Person facts
+   * @param  Array $link            Result of parseLink()
+   * @param  Array $usernameAccount Account at the CO Person's username, or null if the username is free
+   * @return Array state (STATE_TRUSTED, STATE_PREFIX, STATE_CONFLICT or STATE_NONE), account, and comment
+   */
+
+  public static function resolveLinkState($person, $link, $usernameAccount) {
+    $username = $person['username'] ?? '';
+    $sameAccount = !empty($usernameAccount) && $usernameAccount['id'] == $link['id'];
+
+    switch($link['state']) {
+      case self::LINK_TRUSTED:
+        if($sameAccount) {
+          return array('state' => self::STATE_TRUSTED, 'account' => $usernameAccount, 'comment' => '');
+        }
+
+        return array('state'   => self::STATE_CONFLICT,
+                     'account' => null,
+                     'comment' => "Conflict: linked Dataverse account " . $link['id'] . " is no longer at username " . $username);
+      case self::LINK_PREFIX:
+        if($sameAccount && !is_null(self::ownsAccount($person, $usernameAccount))) {
+          return array('state'   => self::STATE_PREFIX,
+                       'account' => $usernameAccount,
+                       'comment' => "Not yet verified: link was made before ownership checks");
+        }
+
+        return array('state'   => self::STATE_CONFLICT,
+                     'account' => null,
+                     'comment' => "Conflict: link to Dataverse account " . $link['id'] . " made before ownership checks fails them");
+      default:
+        if(!empty($usernameAccount) && is_null(self::ownsAccount($person, $usernameAccount))) {
+          return array('state'   => self::STATE_CONFLICT,
+                       'account' => null,
+                       'comment' => "Conflict: Dataverse username " . $username . " belongs to another person's account");
+        }
+
+        return array('state' => self::STATE_NONE, 'account' => null, 'comment' => "No Dataverse account is linked");
+    }
   }
 
   /**

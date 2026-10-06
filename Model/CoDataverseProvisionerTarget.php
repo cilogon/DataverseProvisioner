@@ -277,12 +277,25 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
         continue;
       }
 
-      $explicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
+      $code = null;
+      $explicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias, $code);
+
+      if($code != 200 && $code != 404) {
+        // A group we could not read must not look like an empty one.
+        $ret[] = array_merge($finding, array('kind' => 'error', 'comment' => "Unable to read Dataverse explicit group $explicitGroupAlias (HTTP $code)"));
+        continue;
+      }
+
       $assignees = $explicitGroup['containedRoleAssignees'] ?? array();
+
+      // Only current memberships back a grant, as in updateExplicitGroupMembership().
+      $now = date('Y-m-d H:i:s');
 
       $args = array();
       $args['conditions']['CoGroupMember.co_group_id'] = $coGroup['CoGroup']['id'];
       $args['conditions']['CoGroupMember.member'] = true;
+      $args['conditions']['AND'][] = array('OR' => array('CoGroupMember.valid_from IS NULL', 'CoGroupMember.valid_from <' => $now));
+      $args['conditions']['AND'][] = array('OR' => array('CoGroupMember.valid_through IS NULL', 'CoGroupMember.valid_through >=' => $now));
       $args['contain'] = false;
 
       $memberships = $this->CoProvisioningTarget->Co->CoGroup->CoGroupMember->find('all', $args);
@@ -309,9 +322,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
           continue;
         }
 
-        if($resolved['state'] == 'trusted' || $resolved['state'] == 'prefix') {
+        if($resolved['state'] == DataverseOwnership::STATE_TRUSTED || $resolved['state'] == DataverseOwnership::STATE_PREFIX) {
           $backed[] = '@' . DataverseOwnership::username($resolved['account']);
-        } elseif($resolved['state'] == 'conflict' || $resolved['state'] == 'error') {
+        } elseif($resolved['state'] == DataverseOwnership::STATE_CONFLICT || $resolved['state'] == DataverseOwnership::STATE_ERROR) {
           $suspect = '@' . $facts['username'];
 
           $ret[] = array_merge($finding, array(
@@ -586,30 +599,25 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     $account = null;
+    $resolved = DataverseOwnership::resolveLinkState($facts, $link, $atUsername['found'] ? $atUsername['user'] : null);
 
-    if($link['state'] == DataverseOwnership::LINK_TRUSTED) {
-      if(!$atUsername['found'] || $atUsername['user']['id'] != $link['id']) {
-        $msg = "conflict: linked Dataverse account " . $link['id'] . " is no longer at username " . $facts['username'];
-        $this->log($logPrefix . $msg);
+    if($resolved['state'] == DataverseOwnership::STATE_TRUSTED) {
+      $account = $resolved['account'];
+    } elseif($resolved['state'] == DataverseOwnership::STATE_PREFIX) {
+      // The link made before ownership checks passes them, so trust it from now on.
+      if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $link['id'], $linkRow)) {
         return false;
       }
 
-      $account = $atUsername['user'];
+      $account = $resolved['account'];
+      $this->log($logPrefix . "verified link to Dataverse account " . $link['id'] . " made before ownership checks");
+    } elseif($link['state'] == DataverseOwnership::LINK_TRUSTED) {
+      // A trusted link that no longer resolves is not re-synced.
+      $this->log($logPrefix . lcfirst($resolved['comment']));
+      return false;
     } elseif($link['state'] == DataverseOwnership::LINK_PREFIX) {
-      if($atUsername['found']
-         && $atUsername['user']['id'] == $link['id']
-         && DataverseOwnership::ownsAccount($facts, $atUsername['user'])) {
-        // The link made before ownership checks passes them, so trust it from now on.
-        if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $link['id'], $linkRow)) {
-          return false;
-        }
-
-        $account = $atUsername['user'];
-        $this->log($logPrefix . "verified link to Dataverse account " . $link['id'] . " made before ownership checks");
-      } else {
-        // Set the failed link aside and look for an account that is theirs.
-        $this->log($logPrefix . "link to Dataverse account " . $link['id'] . " made before ownership checks fails them");
-      }
+      // Set the failed link aside and look for an account that is theirs.
+      $this->log($logPrefix . "link to Dataverse account " . $link['id'] . " made before ownership checks fails them");
     }
 
     if(is_null($account)) {
@@ -756,6 +764,56 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $apiToken = $config['password'];
       $adminToken = $coProvisioningTargetData['CoDataverseProvisionerTarget']['admin_token'];
       $this->Http = new DataverseHttpClient($config, $apiToken, $adminToken);
+  }
+
+  /**
+   * Explain why a CO Person with no link to a Dataverse account is not
+   * provisioned, using the same rules as provisioning but changing nothing.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array   $facts                    CO Person facts from personFacts()
+   * @param  Integer $coPersonId               CO Person ID
+   * @param  Array   $usernameAccount          Account at the CO Person's username, or null if the username is free
+   * @return String  Status comment
+   */
+
+  protected function diagnoseUnlinked($coProvisioningTargetData, $facts, $coPersonId, $usernameAccount) {
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
+
+    $byEmail = $this->findUsersByEmail($facts['email']);
+
+    if($byEmail['error']) {
+      return "Unable to query Dataverse for email " . $facts['email'];
+    }
+
+    $decision = DataverseOwnership::classify($facts, $usernameAccount, $byEmail['accounts']);
+
+    if($decision['outcome'] == DataverseOwnership::OUTCOME_OWNED) {
+      $account = $decision['account'];
+      $username = DataverseOwnership::username($account);
+      $holders = $this->linkHolders($coProvisioningTargetId, $account['id'], $coPersonId);
+
+      if(!empty($holders['trusted'])) {
+        return "Conflict: Dataverse account @$username is already linked to CO Person " . implode(", ", $holders['trusted']);
+      }
+
+      if($username !== $facts['username']) {
+        $holder = $this->usernameHolder($coProvisioningTargetData, $facts, $username);
+
+        if(!is_null($holder)) {
+          return "Conflict: Dataverse username $username is the Registry identifier of CO Person $holder";
+        }
+      }
+
+      return "Not yet linked: Dataverse account @$username belongs to this CO Person and will be linked on the next provisioning";
+    }
+
+    if($decision['skippedUnverifiedEmail']) {
+      return "Conflict: email " . $facts['email'] . " is used by a Dataverse account but is not verified in Registry";
+    }
+
+    return "No Dataverse account is linked. If provisioning has already run, the Registry log has the reason no account was created";
   }
 
   /**
@@ -912,15 +970,17 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @since  COmanage Registry v4.3.4
    * @param  String $ownerDataverseAlias owner dataverse alias 
    * @param  String $explicitGroupAlias  explicit group alias
+   * @param  Integer $code               Set to the HTTP status of the request
    * @return Array explicit group object
    */
 
-  protected function getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias) {
+  protected function getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias, &$code = null) {
     $logPrefix = "getDataverseExplicitGroup: owner dataverse alias $ownerDataverseAlias: explicit group alias $explicitGroupAlias: ";
     $dataverseExplicitGroup = array();
 
     $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias";
     $response = $this->Http->get($path);
+    $code = $response->code;
 
     if($response->code == 200) {
       $dataverseExplicitGroup = json_decode($response->body, true)['data'];
@@ -1352,7 +1412,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   protected function resolveLink($coProvisioningTargetData, $facts, $coPersonId) {
     $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
-    $ret = array('state' => 'none', 'account' => null, 'linkRow' => null, 'comment' => '');
+    $ret = array('state' => DataverseOwnership::STATE_NONE, 'account' => null, 'linkRow' => null, 'comment' => '', 'usernameAccount' => null);
 
     $ret['linkRow'] = $this->getDataverseIdIdentifier($coPersonId, $coProvisioningTargetId);
     $link = DataverseOwnership::parseLink($ret['linkRow']['Identifier']['identifier'] ?? null, $coProvisioningTargetId);
@@ -1360,44 +1420,14 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $atUsername = $this->lookupUserByUsername($facts['username']);
 
     if($atUsername['error']) {
-      $ret['state'] = 'error';
+      $ret['state'] = DataverseOwnership::STATE_ERROR;
       $ret['comment'] = "Unable to query Dataverse for username " . $facts['username'];
       return $ret;
     }
 
-    $sameAccount = $atUsername['found'] && $atUsername['user']['id'] == $link['id'];
+    $ret['usernameAccount'] = $atUsername['found'] ? $atUsername['user'] : null;
 
-    switch($link['state']) {
-      case DataverseOwnership::LINK_TRUSTED:
-        if($sameAccount) {
-          $ret['state'] = 'trusted';
-          $ret['account'] = $atUsername['user'];
-        } else {
-          $ret['state'] = 'conflict';
-          $ret['comment'] = "Conflict: linked Dataverse account " . $link['id'] . " is no longer at username " . $facts['username'];
-        }
-        break;
-      case DataverseOwnership::LINK_PREFIX:
-        if($sameAccount && DataverseOwnership::ownsAccount($facts, $atUsername['user'])) {
-          $ret['state'] = 'prefix';
-          $ret['account'] = $atUsername['user'];
-          $ret['comment'] = "Not yet verified: link was made before ownership checks";
-        } else {
-          $ret['state'] = 'conflict';
-          $ret['comment'] = "Conflict: link to Dataverse account " . $link['id'] . " made before ownership checks fails them";
-        }
-        break;
-      default:
-        if($atUsername['found'] && is_null(DataverseOwnership::ownsAccount($facts, $atUsername['user']))) {
-          $ret['state'] = 'conflict';
-          $ret['comment'] = "Conflict: Dataverse username " . $facts['username'] . " belongs to another person's account";
-        } else {
-          $ret['comment'] = "No Dataverse account is linked";
-        }
-        break;
-    }
-
-    return $ret;
+    return array_merge($ret, DataverseOwnership::resolveLinkState($facts, $link, $ret['usernameAccount']));
   }
 
   /**
@@ -1497,15 +1527,21 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $resolved = $this->resolveLink($coProvisioningTargetData, $facts, $id);
 
       switch($resolved['state']) {
-        case 'trusted':
+        case DataverseOwnership::STATE_TRUSTED:
           $account = $resolved['account'];
           $ret['status'] = ProvisioningStatusEnum::Provisioned;
           $ret['comment'] = !empty($account['deactivated']) ? "User is deactivated in Dataverse" : "User is active in Dataverse";
           $ret['timestamp'] = $account['createdTime'] ?? null;
           break;
-        case 'error':
+        case DataverseOwnership::STATE_ERROR:
           $ret['status'] = ProvisioningStatusEnum::Unknown;
           $ret['comment'] = $resolved['comment'];
+          break;
+        case DataverseOwnership::STATE_CONFLICT:
+          $ret['comment'] = $resolved['comment'] . ". Group removals for this CO Person are skipped, so an earlier grant may sit on another account.";
+          break;
+        case DataverseOwnership::STATE_NONE:
+          $ret['comment'] = $this->diagnoseUnlinked($coProvisioningTargetData, $facts, $id, $resolved['usernameAccount']);
           break;
         default:
           $ret['comment'] = $resolved['comment'];
@@ -1568,22 +1604,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
-    $coId = $this->coIdForTarget($coProvisioningTargetData);
-
     $Identifier = $this->CoProvisioningTarget->Co->CoPerson->Identifier;
 
     // Another CO Person holding this username would make the link ambiguous.
-    $args = array();
-    $args['conditions']['Identifier.type'] = $identifierType;
-    $args['conditions']['Identifier.identifier'] = $username;
-    $args['conditions']['Identifier.id !='] = $facts['usernameIdentifierId'];
-    $args['conditions']['CoPerson.co_id'] = $coId;
-    $args['contain'] = array('CoPerson');
+    $holder = $this->usernameHolder($coProvisioningTargetData, $facts, $username);
 
-    $holder = $Identifier->find('first', $args);
-
-    if(!empty($holder)) {
-      $this->log($logPrefix . "conflict: Dataverse username $username is the Registry identifier of CO Person " . $holder['Identifier']['co_person_id']);
+    if(!is_null($holder)) {
+      $this->log($logPrefix . "conflict: Dataverse username $username is the Registry identifier of CO Person $holder");
       return false;
     }
 
@@ -1650,15 +1677,15 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $resolved = $this->resolveLink($coProvisioningTargetData, $facts, $coPersonId);
 
-    if($resolved['state'] == 'prefix') {
+    if($resolved['state'] == DataverseOwnership::STATE_PREFIX) {
       // The link made before ownership checks passes them, so trust it from now on.
       if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $resolved['account']['id'], $resolved['linkRow'])) {
         return false;
       }
-      $resolved['state'] = 'trusted';
+      $resolved['state'] = DataverseOwnership::STATE_TRUSTED;
     }
 
-    if($resolved['state'] != 'trusted') {
+    if($resolved['state'] != DataverseOwnership::STATE_TRUSTED) {
       if($isMember) {
         $this->log($logPrefix . "no trusted link so no membership granted: " . $resolved['comment']);
       } else {
@@ -1701,5 +1728,29 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $this->log($logPrefix . $msg);
 
     return true;
+  }
+
+  /**
+   * Find another CO Person in the CO whose Dataverse username Identifier is
+   * the given value.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array   $facts                    CO Person facts from personFacts()
+   * @param  String  $username                 Dataverse username
+   * @return Integer CO Person ID of the holder, or null if none
+   */
+
+  protected function usernameHolder($coProvisioningTargetData, $facts, $username) {
+    $args = array();
+    $args['conditions']['Identifier.type'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
+    $args['conditions']['Identifier.identifier'] = $username;
+    $args['conditions']['Identifier.id !='] = $facts['usernameIdentifierId'];
+    $args['conditions']['CoPerson.co_id'] = $this->coIdForTarget($coProvisioningTargetData);
+    $args['contain'] = array('CoPerson');
+
+    $holder = $this->CoProvisioningTarget->Co->CoPerson->Identifier->find('first', $args);
+
+    return empty($holder) ? null : $holder['Identifier']['co_person_id'];
   }
 }

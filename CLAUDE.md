@@ -22,8 +22,11 @@ docblocks (`@since`, `@param`, `@return`). Do not run an autoformatter
 
 ## Testing
 
-There is no test suite yet; the `Test/` directories contain only empty
-placeholders. Do not go looking for one to run.
+The account ownership rules in `Lib/DataverseOwnership.php` have PHPUnit tests
+under `Test/Case/Lib` that run outside Registry: `composer install`, then
+`vendor/bin/phpunit`. Run them after changing anything in `Lib/` or the model.
+Everything else needs a Registry deployment with a Dataverse server, such as
+CADRE TEST; there is no test harness for the model or controllers.
 
 ## Pushing
 
