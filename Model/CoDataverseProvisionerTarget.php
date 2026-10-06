@@ -213,6 +213,148 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   );
 
   /**
+   * Find Dataverse access that may sit on the wrong account, without
+   * changing anything.
+   *
+   * For each CO Group carrying a DOI Identifier, report each member whose
+   * Dataverse link is in conflict (including a username whose account is
+   * not theirs), whether that account is in the Dataverse explicit group,
+   * and each explicit group member not backed by a CO Group member's link.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Integer $id CO Dataverse Provisioner Target ID
+   * @return Array   List of findings, each with kind, coGroupId, coGroupName, coPersonId, account, inGroup, comment
+   * @throws InvalidArgumentException
+   */
+
+  public function audit($id) {
+    $ret = array();
+
+    $args = array();
+    $args['conditions']['CoDataverseProvisionerTarget.id'] = $id;
+    $args['contain'] = false;
+
+    $coProvisioningTargetData = $this->find('first', $args);
+
+    if(empty($coProvisioningTargetData)) {
+      throw new InvalidArgumentException("No CO Dataverse Provisioner Target with ID $id");
+    }
+
+    $this->activeId = $id;
+    $this->createHttpClient($coProvisioningTargetData);
+
+    $cfg = $coProvisioningTargetData['CoDataverseProvisionerTarget'];
+    $coId = $this->CoProvisioningTarget->field('co_id', array('CoProvisioningTarget.id' => $cfg['co_provisioning_target_id']));
+
+    $args = array();
+    $args['conditions']['CoGroup.co_id'] = $coId;
+    $args['contain'] = array('Identifier');
+
+    $coGroups = $this->CoProvisioningTarget->Co->CoGroup->find('all', $args);
+
+    $people = array();
+
+    foreach($coGroups as $coGroup) {
+      $isDoiGroup = false;
+      foreach($coGroup['Identifier'] as $i) {
+        if($i['type'] == $cfg['group_type'] && $i['status'] == SuspendableStatusEnum::Active) {
+          $isDoiGroup = true;
+        }
+      }
+
+      if(!$isDoiGroup) {
+        continue;
+      }
+
+      $finding = array(
+        'kind'        => null,
+        'coGroupId'   => $coGroup['CoGroup']['id'],
+        'coGroupName' => $coGroup['CoGroup']['name'],
+        'coPersonId'  => null,
+        'account'     => null,
+        'inGroup'     => null,
+        'comment'     => ''
+      );
+
+      $obj = $this->coGroupToOwnerDataverse($coProvisioningTargetData, $coGroup);
+      list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($obj);
+
+      if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
+        $ret[] = array_merge($finding, array('kind' => 'error', 'comment' => $comment));
+        continue;
+      }
+
+      $explicitGroup = $this->getDataverseExplicitGroup($ownerDataverseAlias, $explicitGroupAlias);
+      $assignees = $explicitGroup['containedRoleAssignees'] ?? array();
+
+      $args = array();
+      $args['conditions']['CoGroupMember.co_group_id'] = $coGroup['CoGroup']['id'];
+      $args['conditions']['CoGroupMember.member'] = true;
+      $args['contain'] = false;
+
+      $memberships = $this->CoProvisioningTarget->Co->CoGroup->CoGroupMember->find('all', $args);
+
+      $backed = array();
+
+      foreach($memberships as $m) {
+        $coPersonId = $m['CoGroupMember']['co_person_id'];
+
+        if(!isset($people[$coPersonId])) {
+          $args = array();
+          $args['conditions']['CoPerson.id'] = $coPersonId;
+          $args['contain'] = array('Identifier', 'EmailAddress');
+
+          $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
+
+          $facts = $this->personFacts($coProvisioningTargetData,
+                                      $coPerson['Identifier'] ?? array(),
+                                      $coPerson['EmailAddress'] ?? array());
+
+          $people[$coPersonId] = array('facts' => $facts, 'resolved' => null);
+
+          if(!is_null($facts['username'])) {
+            $people[$coPersonId]['resolved'] = $this->resolveLink($coProvisioningTargetData, $facts, $coPersonId);
+          }
+        }
+
+        $facts = $people[$coPersonId]['facts'];
+        $resolved = $people[$coPersonId]['resolved'];
+
+        if(is_null($resolved)) {
+          continue;
+        }
+
+        if($resolved['state'] == 'trusted' || $resolved['state'] == 'prefix') {
+          $backed[] = '@' . DataverseOwnership::username($resolved['account']);
+        } elseif($resolved['state'] == 'conflict' || $resolved['state'] == 'error') {
+          $suspect = '@' . $facts['username'];
+
+          $ret[] = array_merge($finding, array(
+            'kind'       => 'person',
+            'coPersonId' => $coPersonId,
+            'account'    => $suspect,
+            'inGroup'    => in_array($suspect, $assignees),
+            'comment'    => $resolved['comment']
+          ));
+        }
+      }
+
+      foreach($assignees as $a) {
+        if(is_string($a) && str_starts_with($a, '@') && !in_array($a, $backed)) {
+          $ret[] = array_merge($finding, array(
+            'kind'    => 'unexpected',
+            'account' => $a,
+            'inGroup' => true,
+            'comment' => "Dataverse group member not backed by a CO Group member with a trusted link"
+          ));
+        }
+      }
+    }
+
+    return $ret;
+  }
+
+  /**
    * Map CO Group to owner dataverse and explicit group alias combination
    *
    * The CO Group Identifier of the configured type holds the DOI, optionally
