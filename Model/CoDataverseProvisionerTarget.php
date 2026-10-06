@@ -27,6 +27,7 @@
 
 App::uses("CoProvisionerPluginTarget", "Model");
 App::uses("DataverseHttpClient", "DataverseProvisioner.Lib");
+App::uses("DataverseOwnership", "DataverseProvisioner.Lib");
 
 class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   // Define class name for cake
@@ -212,35 +213,17 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   );
 
   /**
-   * Add Dataverse ID Identifier of type IdentifierEnum::ProvisioningTarget
-   *
-   * @since  COmanage Registry v4.3.4
-   * @param  Integer  $dataverseId             Dataverse ID
-   * @param  Integer  $coPersonId              CO Person ID
-   * @param  Integer  $coProvisioningTargetId  Provisioning Target ID
-   * @return none                           
-   */
-
-  protected function addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId) {
-    $args = array();
-    $args['Identifier']['identifier'] = "$coProvisioningTargetId:$dataverseId";
-    $args['Identifier']['co_person_id'] = $coPersonId;
-    $args['Identifier']['type'] = IdentifierEnum::ProvisioningTarget;
-    $args['Identifier']['login'] = false;
-    $args['Identifier']['status'] = SuspendableStatusEnum::Active;
-    $args['Identifier']['co_provisioning_target_id'] = $coProvisioningTargetId;
-
-    $this->CoProvisioningTarget->Co->CoPerson->Identifier->clear();
-    $this->CoProvisioningTarget->Co->CoPerson->Identifier->save($args);
-  }
-
-  /**
    * Map CO Group to owner dataverse and explicit group alias combination
+   *
+   * The CO Group Identifier of the configured type holds the DOI, optionally
+   * followed by "-<suffix>" naming an access variant. The full identifier is
+   * tried as a DOI first; the suffix is stripped only when that lookup
+   * definitely finds nothing. Any other lookup failure stops the mapping.
    *
    * @since  COmanage Registry v4.3.4
    * @param  Array $coProvisioningTargetData CO Provisioning Target data
    * @param  Array $coGroup                  CO Group data
-   * @return Array array of owner dataverse, explicit group alias, and comment on error                         
+   * @return Array array of owner dataverse, explicit group alias, and comment on error
    * @throws InvalidArgumentException
    */
 
@@ -253,8 +236,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $groupIdentifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['group_type'];
 
     // Find the Dataverse group Identifier for the CO Group which holds the DOI.
-    $doi = null;
-    $doiSuffix = null;
+    $rawIdentifier = null;
     $identifiers = array();
 
     if(!empty($coGroup['Identifier'])) {
@@ -264,28 +246,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     foreach($identifiers as $identifier) {
-      if ($identifier['type'] == $groupIdentifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
+      if($identifier['type'] == $groupIdentifierType && $identifier['status'] == SuspendableStatusEnum::Active) {
         $rawIdentifier = $identifier['identifier'];
-
-        $dashPos = strrpos($rawIdentifier, '-');
-        if($dashPos !== false) {
-          $candidateSuffix = substr($rawIdentifier, $dashPos+1);
-
-          if($candidateSuffix !== '' && strpos($candidateSuffix, '-') === false) {
-            $doiSuffix = $candidateSuffix;
-            $doi = substr($rawIdentifier, 0, $dashPos);
-          } else {
-            $doi = $rawIdentifier;
-          }
-        } else {
-          $doi = $rawIdentifier;
-        }
-
         break;
       }
     }
 
-    if(is_null($doi)) {
+    if(is_null($rawIdentifier)) {
       $ret['comment'] = "No Identifier of type " . $groupIdentifierType . " for CO Group";
       return $ret;
     }
@@ -298,68 +265,97 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     // may not actually publish DOIs in a way that can be resolved using the
     // DOI API.
     $skipDoiMapping = $coProvisioningTargetData['CoDataverseProvisionerTarget']['skip_doi'] ?? false;
-    if(!$skipDoiMapping) {
-      // Exchange the DOI using the DOI API for a server host.
-      $doiMappedServerHost = $this->doiToMappedServerHost($doi, $coProvisioningTargetData);
 
-      if(is_null($doiMappedServerHost)) {
-        $ret['comment'] = "Unable to map DOI to Dataverse server";
+    foreach(DataverseOwnership::doiInterpretations($rawIdentifier) as $candidate) {
+      $doi = $candidate['doi'];
+
+      if(!$skipDoiMapping) {
+        // Exchange the DOI using the DOI API for a server host.
+        $mapped = $this->doiToMappedServerHost($doi, $coProvisioningTargetData);
+
+        if($mapped['status'] == 'notfound') {
+          // Not a DOI as written, so try the next interpretation.
+          continue;
+        }
+
+        if($mapped['status'] != 'found') {
+          $ret['comment'] = "Unable to map DOI to Dataverse server";
+          return $ret;
+        }
+
+        // Find our configured Dataserver host.
+        $args = array();
+        $args['conditions']['Server.id'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'];
+        $args['conditions']['Server.status'] = SuspendableStatusEnum::Active;
+        $args['contain'] = array('HttpServer');
+
+        $CoProvisioningTarget = new CoProvisioningTarget();
+        $srvr = $CoProvisioningTarget->Co->Server->find('first', $args);
+
+        if(empty($srvr)) {
+          throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
+        }
+
+        $myServerHost = parse_url($srvr['HttpServer']['serverurl'])['host'];
+
+        // If the server mapped from the DOI is not the same as our server then return.
+        if($myServerHost != $mapped['host']) {
+          $ret['comment'] = "DOI does not map to this Dataverse server";
+          return $ret;
+        }
+      }
+
+      // Query the Dataverse server with the DOI persistent ID to find the owner dataverse.
+      $owner = $this->doiToOwnerDataverseAlias($doi);
+
+      if($owner['status'] == 'notfound' && $skipDoiMapping) {
+        // Without the DOI API the dataset lookup decides which interpretation is real.
+        continue;
+      }
+
+      if($owner['status'] != 'found') {
+        $ret['comment'] = "Unable to determine owner dataverse for DOI $doi";
         return $ret;
       }
 
-      // Find our configured Dataserver host.
-      $args = array();
-      $args['conditions']['Server.id'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'];
-      $args['conditions']['Server.status'] = SuspendableStatusEnum::Active;
-      $args['contain'] = array('HttpServer');
+      $ret['ownerDataverseAlias'] = $owner['alias'];
 
-      $CoProvisioningTarget = new CoProvisioningTarget();
-      $srvr = $CoProvisioningTarget->Co->Server->find('first', $args);
+      // The group alias in the owning dataverse/collection is constructed from the DOI.
+      $alias = "authorized_" . str_replace(array(".", "/"), array("_", "_"), $doi);
 
-      if(empty($srvr)) {
-        throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
+      if(!empty($candidate['suffix'])) {
+        $sanitizedSuffix = strtolower(preg_replace('/[^A-Za-z0-9_]/', '_', $candidate['suffix']));
+
+        if(strlen($sanitizedSuffix) > 0) {
+          $alias = $alias . '_' . $sanitizedSuffix;
+        }
       }
 
-      $myServerHost = parse_url($srvr['HttpServer']['serverurl'])['host'];
+      $ret['explicitGroupAlias'] = $alias;
 
-      // If the server mapped from the DOI is not the same as our server then return.
-      if($myServerHost != $doiMappedServerHost) {
-        $ret['comment'] = "DOI does not map to this Dataverse server";
-        return $ret;
-      }
+      return $ret;
     }
 
-    // Query the Dataverse server with the DOI persistent ID to find the owner dataverse.
-    $ret['ownerDataverseAlias'] = $this->doiToOwnerDataverseAlias($doi);
-
-    // The group alias in the owning dataverse/collection is constructed from the DOI.
-    $alias = "authorized_" . str_replace(array(".", "/"), array("_", "_"), $doi);
-
-    if(!empty($doiSuffix)) {
-      $sanitizedSuffix = strtolower(preg_replace('/[^A-Za-z0-9_]/', '_', $doiSuffix));
-
-      if(strlen($sanitizedSuffix) > 0) {
-        $alias = $alias . '_' . $sanitizedSuffix;
-      }
-    }
-
-    $ret['explicitGroupAlias'] = $alias;
-
+    $ret['comment'] = "Unable to map DOI to Dataverse server";
     return $ret;
   }
 
   /**
-   * Create an Authenticated User in Dataverse for a CO Person.
-   * 
+   * Provision the Dataverse authenticated user for a CO Person.
+   *
+   * A Dataverse account is linked to the CO Person only when it is shown to
+   * be theirs (see DataverseOwnership). Any doubt fails closed: no account is
+   * created, no group membership is granted, and the reason is logged and
+   * reported by status().
+   *
    * @since  COmanage Registry v4.3.4
    * @param  Array            $coProvisioningTargetData  CoProvisioningTargetData
    * @param  Array            $provisioningData          provisioning data
    * @throws RuntimeException
-   * @return boolean          true
+   * @return boolean          true when the CO Person has a trusted link
    */
-  
+
   protected function createAuthenticatedUser($coProvisioningTargetData, $provisioningData) {
-    $authenticatedUser = array();
     $coPersonId = $provisioningData['CoPerson']['id'];
     $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
@@ -373,52 +369,25 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    // Find the Dataverse identifier.
-    $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
-
-    $dataverseIdentifier = null;
-    foreach ($provisioningData['Identifier'] as $identifier) {
-      if($identifier['type'] == $identifierType) {
-        $dataverseIdentifier = $identifier['identifier'];
-        break;
-      }
-    }
+    $facts = $this->personFacts($coProvisioningTargetData,
+                                $provisioningData['Identifier'] ?? array(),
+                                $provisioningData['EmailAddress'] ?? array());
 
     // We cannot provision an authenticated user without a Dataverse identifier.
-    if(is_null($dataverseIdentifier)) {
+    $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
+    if(is_null($facts['username'])) {
       $msg = "has no Dataverse identifier of type $identifierType so will not be provisioned";
       $this->log($logPrefix . $msg);
       return false;
     }
 
-    // Skip over CO person records that are already provisioned.
-    if(!empty($this->getAuthenticatedUserByIdentifier($dataverseIdentifier))) {
-      $msg = "is already provisioned";
-      $this->log($logPrefix . $msg);
-      return true;
-    }
-
-    $authenticatedUser['identifier'] = $dataverseIdentifier;
-
-    // Find the persistent user identifier.
-    $persistentUserIdType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['persistent_user_id_type'];
-
-    $persistentUserId = null;
-    foreach ($provisioningData['Identifier'] as $identifier) {
-      if($identifier['type'] == $persistentUserIdType) {
-        $persistentUserId = $identifier['identifier'];
-        break;
-      }
-    }
-
     // We cannot provision an authenticated user without a persistent user ID.
-    if(is_null($persistentUserId)) {
+    $persistentUserIdType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['persistent_user_id_type'];
+    if(is_null($facts['persistentUserId'])) {
       $msg = "has no persistent user ID of type $persistentUserIdType so will not be provisioned";
       $this->log($logPrefix . $msg);
       return false;
     }
-
-    $authenticatedUser['persistentUserId'] = $persistentUserId;
 
     // Find the Name data.
     $nameType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['name_type'];
@@ -438,29 +407,12 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    $authenticatedUser['firstName'] = $provisioningData['Name'][$namei]['given'] ?? 'none';
-    $authenticatedUser['lastName'] = $provisioningData['Name'][$namei]['family'] ?? 'none';
-
-    // Find the EmailAddress data.
-    $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
-    $emaili = null;
-
-    foreach ($provisioningData['EmailAddress'] as $i => $email) {
-      if($email['type'] == $emailType && empty($email['source_email_address_id'])) {
-        $emaili = $i;
-        break;
-      }
-    }
-
     // We cannot provision without email data.
-    if(is_null($emaili)) {
+    if(is_null($facts['email'])) {
       $msg = "has no email data so will not be provisioned";
       $this->log($logPrefix . $msg);
       return false;
     }
-
-    $authenticatedUser['email'] = $provisioningData['EmailAddress'][$emaili]['mail'];
-    $authenticatedUser['authenticationProviderId'] = $coProvisioningTargetData['CoDataverseProvisionerTarget']['authentication_provider_id'];
 
     // We only provision a user that is a member of at least one authorization
     // group, that is a CO Group with an Identifier of the configured type.
@@ -471,7 +423,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $coGroupIdentifiers = $m['CoGroup']['Identifier'] ?? array();
       foreach ($coGroupIdentifiers as $i) {
         $gtype = $i['type'] ?? null;
-        if($gtype == $coProvisioningTargetData['CoDataverseProvisionerTarget']['group_type']) {
+        if($gtype == $authGroupType) {
           $isAuthorized = true;
         }
       }
@@ -483,62 +435,78 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    // Check to see if a user with the email already exists in Dataverse.
-    $m = $authenticatedUser['email'];
-    $existingUser = $this->getAuthenticatedUserByEmail($m);
+    $linkRow = $this->getDataverseIdIdentifier($coPersonId, $coProvisioningTargetId);
+    $link = DataverseOwnership::parseLink($linkRow['Identifier']['identifier'] ?? null, $coProvisioningTargetId);
 
-    if(empty($existingUser)) {
-      // Provision the authenticated user in Dataverse.
-      $path = "/api/admin/authenticatedUsers";
-      $response = $this->Http->post($path, json_encode($authenticatedUser));
+    $atUsername = $this->lookupUserByUsername($facts['username']);
+    if($atUsername['error']) {
+      $this->log($logPrefix . "unable to query Dataverse for username " . $facts['username']);
+      return false;
+    }
 
-      if($response->code != 200) {
-        $msg = "unable to create the dataverse authenticated user " . print_r($authenticatedUser, true);
+    $account = null;
+
+    if($link['state'] == DataverseOwnership::LINK_TRUSTED) {
+      if(!$atUsername['found'] || $atUsername['user']['id'] != $link['id']) {
+        $msg = "conflict: linked Dataverse account " . $link['id'] . " is no longer at username " . $facts['username'];
         $this->log($logPrefix . $msg);
         return false;
       }
 
-      // Record the Dataverse ID for the newly created authenticated user.
-      $dataverseId = json_decode($response->body, true)['data']['id'];
-      $msg = "created the dataverse authenticated user " . print_r($authenticatedUser, true);
-      $this->log($logPrefix . $msg);
-    } else {
-      // The user already exists in Dataverse so reconcile the Identifier value.
-      $this->log($logPrefix . "User with email $m already exists in Dataverse");
-
-      $desiredIdentifierValue = $existingUser['userIdentifier'];
-
-      foreach ($provisioningData['Identifier'] as $identifier) {
-        if($identifier['type'] == $identifierType) {
-          $currentIdentifierValue = $identifier['identifier'];
-          break;
+      $account = $atUsername['user'];
+    } elseif($link['state'] == DataverseOwnership::LINK_PREFIX) {
+      if($atUsername['found']
+         && $atUsername['user']['id'] == $link['id']
+         && DataverseOwnership::ownsAccount($facts, $atUsername['user'])) {
+        // The link made before ownership checks passes them, so trust it from now on.
+        if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $link['id'], $linkRow)) {
+          return false;
         }
-      }
 
-      $options = array('provision' => false);
-      $this->CoProvisioningTarget->Co->CoPerson->Identifier->id = $identifier['id'];
-      $ret = $this->CoProvisioningTarget->Co->CoPerson->Identifier->saveField('identifier', $desiredIdentifierValue, $options);
-
-      if(!$ret) {
-        $msg = "Unable to change Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
-        $this->log($logPrefix . $msg);
-        return false;
+        $account = $atUsername['user'];
+        $this->log($logPrefix . "verified link to Dataverse account " . $link['id'] . " made before ownership checks");
       } else {
-        $msg = "Changed Identifier of type $identifierType from $currentIdentifierValue to $desiredIdentifierValue";
-        $this->log($logPrefix . $msg);
-        $dataverseId = $existingUser['id'];
+        // Set the failed link aside and look for an account that is theirs.
+        $this->log($logPrefix . "link to Dataverse account " . $link['id'] . " made before ownership checks fails them");
       }
     }
 
-    // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget
-    // and reconcile.
-    $dataverseIdIdentifier = $this->getDataverseIdIdentifier($coPersonId, $coProvisioningTargetId);
+    if(is_null($account)) {
+      $account = $this->linkOwnedAccount($coProvisioningTargetData, $provisioningData, $facts, $atUsername, $linkRow);
 
-    if(is_null($dataverseIdIdentifier)) {
-      $this->addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId);
-    } elseif ($dataverseIdIdentifier['Identifier']['id'] != ($coProvisioningTargetId . ':' . $dataverseId)) {
-      $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
-      $this->addDataverseIdIdentifier($dataverseId, $coPersonId, $coProvisioningTargetId);
+      if(is_null($account)) {
+        return false;
+      }
+    }
+
+    if(!empty($account['deactivated'])) {
+      $this->log($logPrefix . "Dataverse account " . $account['id'] . " is deactivated so no group memberships will be granted");
+      return true;
+    }
+
+    // Grant any group memberships that were skipped while the CO Person had no trusted link.
+    $username = DataverseOwnership::username($account);
+
+    foreach ($provisioningData['CoGroupMember'] as $m) {
+      if(empty($m['member']) || empty($m['CoGroup'])) {
+        continue;
+      }
+
+      $hasDoi = false;
+      foreach ($m['CoGroup']['Identifier'] ?? array() as $i) {
+        if(($i['type'] ?? null) == $authGroupType && ($i['status'] ?? null) == SuspendableStatusEnum::Active) {
+          $hasDoi = true;
+        }
+      }
+
+      if($hasDoi) {
+        $coGroup = array(
+          'CoGroup'    => $m['CoGroup'],
+          'Identifier' => $m['CoGroup']['Identifier']
+        );
+
+        $this->grantGroupMembership($coProvisioningTargetData, $coGroup, $username, $logPrefix);
+      }
     }
 
     return true;
@@ -565,9 +533,9 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       if(empty($srvr)) {
         throw new InvalidArgumentException(_txt('er.notfound', array(_txt('ct.http_servers.1'), $coProvisioningTargetData['CoDataverseProvisionerTarget']['server_id'])));
       }
-      
+
       $this->Doi = new CoHttpClient();
-      
+
       $this->Doi->setConfig($srvr['HttpServer']);
 
       $this->Doi->setRequestOptions(array(
@@ -622,7 +590,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     return true;
   }
-  
+
   /**
    * Create HTTP client connected to Dataverse server
    *
@@ -652,53 +620,48 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
-   * Delete Dataverse ID Identifier of type IdentifierEnum::ProvisioningTarget
-   *
-   * @since  COmanage Registry v4.0.0
-   * @param  Integer  $id                      Identifier id
-   * @return none                           
-   * @throws RuntimeException
-   */
-
-  protected function deleteDataverseIdIdentifier($id) {
-    $this->CoProvisioningTarget->Co->CoPerson->Identifier->clear();
-    $this->CoProvisioningTarget->Co->CoPerson->Identifier->delete($id);
-  }
-
-  /**
    * Map DOI to a dataverse server host.
    *
    * @since  COmanage Registry v4.3.4
    * @param  String                 $doi                      DOI
    * @param  Array                  $coProvisioningTargetData CO Provisioning Target data
-   * @return String dataserver server host
+   * @return Array status (found, notfound, or error) and host
    */
 
   protected function doiToMappedServerHost($doi, $coProvisioningTargetData) {
     $logPrefix = "doiToMappedServerHost: DOI $doi: ";
 
-    $host = null;
+    $ret = array('status' => 'error', 'host' => null);
     $this->createDoiClient($coProvisioningTargetData);
 
     $path = "/api/handles/" . $doi;
     $response = $this->Doi->get($path);
 
     if($response->code == 200) {
-      $values = json_decode($response->body, true)['values'] ?? null;
+      $values = json_decode($response->body, true)['values'] ?? array();
       foreach($values as $v) {
         if($v['type'] == 'URL') {
           $citationUrl = $v['data']['value'];
-          $host = parse_url($citationUrl)['host'];
-          $msg = "citation URL $citationUrl mapped to host $host";
+          $ret['host'] = parse_url($citationUrl)['host'] ?? null;
+          $msg = "citation URL $citationUrl mapped to host " . $ret['host'];
           $this->log($logPrefix . $msg);
         }
       }
+
+      if(!empty($ret['host'])) {
+        $ret['status'] = 'found';
+      } else {
+        $this->log($logPrefix . "DOI server returned no URL so could not determine host");
+      }
+    } elseif($response->code == 404) {
+      $ret['status'] = 'notfound';
+      $this->log($logPrefix . "DOI server does not know this DOI");
     } else {
       $msg = "DOI server return code was " . $response->code . " could not determine host";
       $this->log($logPrefix . $msg);
     }
 
-    return $host;
+    return $ret;
   }
 
   /**
@@ -706,13 +669,13 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    *
    * @since  COmanage Registry v4.3.4
    * @param  String $doi DOI
-   * @return String owner dataverse alias
+   * @return Array status (found, notfound, or error) and owner dataverse alias
    */
 
   protected function doiToOwnerDataverseAlias($doi) {
     $logPrefix = "doiToOwnerDataverseAlias: DOI $doi: ";
 
-    $ownerDataverseAlias = null;
+    $ret = array('status' => 'error', 'alias' => null);
 
     $path = "/api/datasets/:persistentId/";
 
@@ -722,7 +685,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $query['persistentId'] = $doi;
     } else {
       $query['persistentId'] = "doi:" . $doi;
-    }    
+    }
     $query['returnOwners'] = "true";
 
     $response = $this->Http->get($path, $query);
@@ -733,30 +696,40 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $identifier = $body['data']['isPartOf']['identifier'] ?? null;
 
       if($type == "DATAVERSE" && !empty($identifier)) {
-        $ownerDataverseAlias = $identifier;
-        $msg = "owner dataverse alias is $ownerDataverseAlias";
+        $ret['status'] = 'found';
+        $ret['alias'] = $identifier;
+        $msg = "owner dataverse alias is $identifier";
         $this->log($logPrefix . $msg);
       }
+    } elseif($response->code == 404) {
+      $ret['status'] = 'notfound';
+      $this->log($logPrefix . "no dataset with this DOI");
     } else {
       $msg = "DOI return code was " . $response->code . " could not determine owner dataverse alias";
       $this->log($logPrefix . $msg);
     }
 
-    return $ownerDataverseAlias;
+    return $ret;
   }
 
   /**
-   * Get Dataverse authenticated user using email
+   * Find Dataverse authenticated users whose email exactly matches.
+   *
+   * The list-users search matches prefixes and does not return the login
+   * identity, so each exact match is fetched again by its username.
    *
    * @since  COmanage Registry v4.3.5
    * @param  String  $email  email address
-   * @return Array   Array of authenticated user details 
-   * @throws RuntimeException
+   * @return Array   error flag and list of authenticated users
    */
 
-  protected function getAuthenticatedUserByEmail($email) {
-    $logPrefix = "getAuthenticatedUserByEmail: email $email: ";
-    $authenticatedUser = array();
+  protected function findUsersByEmail($email) {
+    $logPrefix = "findUsersByEmail: email $email: ";
+    $ret = array('error' => false, 'accounts' => array());
+
+    if(empty($email)) {
+      return $ret;
+    }
 
     $path = "/api/admin/list-users";
 
@@ -765,53 +738,40 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     $response = $this->Http->get($path, $query);
 
-    if($response->code == 200) {
-      $users = json_decode($response->body, true)['data']['users'];
-      if(!empty($users)) {
-        if(count($users) == 1) {
-          $authenticatedUser = $users[0];
-        }
+    if($response->code != 200) {
+      $msg = "Dataverse server return code was " . $response->code;
+      $this->log($logPrefix . $msg);
+      $ret['error'] = true;
+      return $ret;
+    }
+
+    $users = json_decode($response->body, true)['data']['users'] ?? array();
+
+    foreach($users as $u) {
+      if(!DataverseOwnership::emailsMatch($email, $u['email'] ?? null)) {
+        continue;
       }
-    } else {
-      $msg = "Dataverse server return code was " . $response->code;
-      $this->log($logPrefix . $msg);
+
+      $lookup = $this->lookupUserByUsername(DataverseOwnership::username($u));
+
+      if($lookup['error']) {
+        $ret['error'] = true;
+        return $ret;
+      }
+
+      if($lookup['found']) {
+        $ret['accounts'][] = $lookup['user'];
+      }
     }
 
-    return $authenticatedUser;
+    return $ret;
   }
-
-  /**
-   * Get Dataverse authenticated user using Dataverse identifier
-   *
-   * @since  COmanage Registry v4.3.4
-   * @param  String  $identifier  Dataverse identifier
-   * @return Array   Array of authenticated user details 
-   * @throws RuntimeException
-   */
-
-  protected function getAuthenticatedUserByIdentifier($identifier) {
-    $logPrefix = "getAuthenticatedUserByIdentifier: identifier $identifier: ";
-    $authenticatedUser = array();
-
-    $path = "/api/admin/authenticatedUsers/" . $identifier;
-    $response = $this->Http->get($path);
-
-    if($response->code == 200) {
-      $authenticatedUser = json_decode($response->body, true)['data'];
-    } else {
-      $msg = "Dataverse server return code was " . $response->code;
-      $this->log($logPrefix . $msg);
-    }
-
-    return $authenticatedUser;
-  }
-
 
   /**
    * Get a dataverse explicit group.
    *
    * @since  COmanage Registry v4.3.4
-   * @param  String $ownerDataverseAlias owner dataverse alias 
+   * @param  String $ownerDataverseAlias owner dataverse alias
    * @param  String $explicitGroupAlias  explicit group alias
    * @return Array explicit group object
    */
@@ -847,6 +807,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     $args['conditions']['Identifier.co_person_id'] = $coPersonId;
     $args['conditions']['Identifier.type'] = IdentifierEnum::ProvisioningTarget;
     $args['conditions']['Identifier.co_provisioning_target_id'] = $coProvisioningTargetId;
+    $args['conditions']['Identifier.status'] = SuspendableStatusEnum::Active;
     $args['contain'] = false;
 
     $dataverseIdIdentifier = $this->CoProvisioningTarget->Co->CoPerson->Identifier->find('first', $args);
@@ -856,6 +817,197 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     } else {
       return null;
     }
+  }
+
+  /**
+   * Grant a Dataverse explicit group membership for a CO Group.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array   $coGroup                  CO Group data with ['CoGroup'] and ['Identifier']
+   * @param  String  $username                 Dataverse username of the linked account
+   * @param  String  $logPrefix                Log prefix of the caller
+   * @return Boolean True on success
+   */
+
+  protected function grantGroupMembership($coProvisioningTargetData, $coGroup, $username, $logPrefix) {
+    $obj = $this->coGroupToOwnerDataverse($coProvisioningTargetData, $coGroup);
+    list($ownerDataverseAlias, $explicitGroupAlias, $comment) = array_values($obj);
+
+    if(is_null($ownerDataverseAlias) || is_null($explicitGroupAlias)) {
+      $this->log($logPrefix . "skipping CO Group " . ($coGroup['CoGroup']['id'] ?? '?') . ": " . $comment);
+      return false;
+    }
+
+    if(!$this->createExplicitGroup($coProvisioningTargetData, $coGroup)) {
+      return false;
+    }
+
+    $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias/roleAssignees/@$username";
+    $response = $this->Http->put($path);
+
+    if($response->code != 200) {
+      $msg = ($response->code == 403) ? "Dataverse refused membership for @$username (unknown or deactivated account)" : "Error adding membership";
+      $this->log($logPrefix . $msg);
+      $this->log($logPrefix . "Response from server was " . print_r($response, true));
+      return false;
+    }
+
+    $this->log($logPrefix . "added @$username to group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias");
+    return true;
+  }
+
+  /**
+   * Link a CO Person to the Dataverse account that is theirs, creating it if
+   * their username is free. Every doubt is a logged conflict.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array  $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array  $provisioningData         CO Person provisioning data
+   * @param  Array  $facts                    CO Person facts from personFacts()
+   * @param  Array  $atUsername               Result of lookupUserByUsername() for the CO Person's username
+   * @param  Array  $linkRow                  Existing link Identifier, or null
+   * @return Array  Linked Dataverse account, or null on conflict or error
+   */
+
+  protected function linkOwnedAccount($coProvisioningTargetData, $provisioningData, $facts, $atUsername, $linkRow) {
+    $coPersonId = $provisioningData['CoPerson']['id'];
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
+    $logPrefix = "linkOwnedAccount: CO Person $coPersonId: ";
+
+    $byEmail = $this->findUsersByEmail($facts['email']);
+    if($byEmail['error']) {
+      $this->log($logPrefix . "unable to query Dataverse for email " . $facts['email']);
+      return null;
+    }
+
+    $decision = DataverseOwnership::classify($facts,
+                                             $atUsername['found'] ? $atUsername['user'] : null,
+                                             $byEmail['accounts']);
+
+    if($decision['skippedUnverifiedEmail']) {
+      $this->log($logPrefix . "email " . $facts['email'] . " is not verified in Registry so it was not used to match a Dataverse account");
+    }
+
+    if($decision['outcome'] == DataverseOwnership::OUTCOME_CONFLICT) {
+      $this->log($logPrefix . "conflict: Dataverse username " . $decision['conflictUsername'] . " belongs to another person's account");
+      return null;
+    }
+
+    if($decision['outcome'] == DataverseOwnership::OUTCOME_OWNED) {
+      $account = $decision['account'];
+      $username = DataverseOwnership::username($account);
+
+      // A Dataverse account may be linked to only one CO Person.
+      $holders = $this->linkHolders($coProvisioningTargetId, $account['id'], $coPersonId);
+
+      if(!empty($holders['trusted'])) {
+        $this->log($logPrefix . "conflict: Dataverse account @$username is already linked to CO Person " . implode(", ", $holders['trusted']));
+        return null;
+      }
+
+      if(!empty($holders['prefix'])) {
+        $this->log($logPrefix . "suspect: CO Person " . implode(", ", $holders['prefix']) . " has a link to Dataverse account @$username made before ownership checks");
+      }
+
+      if(!$this->syncUsername($coProvisioningTargetData, $facts, $username, $logPrefix)) {
+        return null;
+      }
+
+      if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $account['id'], $linkRow)) {
+        return null;
+      }
+
+      $this->log($logPrefix . "linked Dataverse account @$username by " . $decision['rule']);
+      return $account;
+    }
+
+    // No account is theirs. Creating one with an email already in use fails, so report that instead.
+    if($decision['skippedUnverifiedEmail']) {
+      $this->log($logPrefix . "conflict: email " . $facts['email'] . " is already used by a Dataverse account and is not verified in Registry");
+      return null;
+    }
+
+    $nameType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['name_type'];
+    $name = array();
+    foreach ($provisioningData['Name'] as $n) {
+      if($n['type'] == $nameType && (bool)$n['primary_name']) {
+        $name = $n;
+        break;
+      }
+    }
+
+    $authenticatedUser = array();
+    $authenticatedUser['identifier'] = $facts['username'];
+    $authenticatedUser['persistentUserId'] = $facts['persistentUserId'];
+    $authenticatedUser['firstName'] = $name['given'] ?? 'none';
+    $authenticatedUser['lastName'] = $name['family'] ?? 'none';
+    $authenticatedUser['email'] = $facts['email'];
+    $authenticatedUser['authenticationProviderId'] = $facts['providerId'];
+
+    $path = "/api/admin/authenticatedUsers";
+    $response = $this->Http->post($path, json_encode($authenticatedUser));
+
+    if($response->code != 200 && $response->code != 201) {
+      $msg = "conflict: unable to create the dataverse authenticated user (the email or login identity may already be used by another account) " . print_r($authenticatedUser, true);
+      $this->log($logPrefix . $msg);
+      return null;
+    }
+
+    $account = json_decode($response->body, true)['data'] ?? array();
+
+    if(empty($account['id'])) {
+      $this->log($logPrefix . "Dataverse did not return the created account");
+      return null;
+    }
+
+    $username = DataverseOwnership::username($account) ?? $facts['username'];
+    $this->log($logPrefix . "created the dataverse authenticated user @$username");
+
+    // Dataverse renames a username that was taken in the meantime.
+    if(!$this->syncUsername($coProvisioningTargetData, $facts, $username, $logPrefix)) {
+      return null;
+    }
+
+    if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $account['id'], $linkRow)) {
+      return null;
+    }
+
+    return $account;
+  }
+
+  /**
+   * Find the CO Persons holding a link to a Dataverse account.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Integer $coProvisioningTargetId Provisioning Target ID
+   * @param  Integer $dataverseId            Dataverse account id
+   * @param  Integer $excludeCoPersonId      CO Person to leave out
+   * @return Array   CO Person ids with trusted links and with links made before ownership checks
+   */
+
+  protected function linkHolders($coProvisioningTargetId, $dataverseId, $excludeCoPersonId) {
+    $ret = array('trusted' => array(), 'prefix' => array());
+
+    $args = array();
+    $args['conditions']['Identifier.type'] = IdentifierEnum::ProvisioningTarget;
+    $args['conditions']['Identifier.co_provisioning_target_id'] = $coProvisioningTargetId;
+    $args['conditions']['Identifier.status'] = SuspendableStatusEnum::Active;
+    $args['conditions']['Identifier.identifier'] = array(
+      DataverseOwnership::formatLink($coProvisioningTargetId, $dataverseId),
+      "$coProvisioningTargetId:$dataverseId"
+    );
+    $args['conditions']['Identifier.co_person_id !='] = $excludeCoPersonId;
+    $args['contain'] = false;
+
+    $rows = $this->CoProvisioningTarget->Co->CoPerson->Identifier->find('all', $args);
+
+    foreach($rows as $r) {
+      $link = DataverseOwnership::parseLink($r['Identifier']['identifier'], $coProvisioningTargetId);
+      $ret[$link['state'] == DataverseOwnership::LINK_TRUSTED ? 'trusted' : 'prefix'][] = $r['Identifier']['co_person_id'];
+    }
+
+    return $ret;
   }
 
   /**
@@ -872,6 +1024,87 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Get Dataverse authenticated user using Dataverse username
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  String  $username  Dataverse username, without the leading '@'
+   * @return Array   found and error flags, and the authenticated user
+   */
+
+  protected function lookupUserByUsername($username) {
+    $logPrefix = "lookupUserByUsername: username $username: ";
+    $ret = array('found' => false, 'error' => false, 'user' => array());
+
+    if(empty($username)) {
+      return $ret;
+    }
+
+    $path = "/api/admin/authenticatedUsers/" . rawurlencode($username);
+    $response = $this->Http->get($path);
+
+    if($response->code == 200) {
+      $ret['found'] = true;
+      $ret['user'] = json_decode($response->body, true)['data'] ?? array();
+    } elseif($response->code == 400 || $response->code == 404) {
+      // Dataverse answers 400 for an unknown username.
+    } else {
+      $msg = "Dataverse server return code was " . $response->code;
+      $this->log($logPrefix . $msg);
+      $ret['error'] = true;
+    }
+
+    return $ret;
+  }
+
+  /**
+   * Gather the CO Person attributes the ownership rules use.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array $identifiers              CO Person Identifiers
+   * @param  Array $emailAddresses           CO Person EmailAddresses
+   * @return Array providerId, persistentUserId, email, emailVerified, username, usernameIdentifierId
+   */
+
+  protected function personFacts($coProvisioningTargetData, $identifiers, $emailAddresses) {
+    $cfg = $coProvisioningTargetData['CoDataverseProvisionerTarget'];
+
+    $facts = array(
+      'providerId'           => $cfg['authentication_provider_id'],
+      'persistentUserId'     => null,
+      'email'                => null,
+      'emailVerified'        => false,
+      'username'             => null,
+      'usernameIdentifierId' => null
+    );
+
+    foreach($identifiers as $identifier) {
+      if(isset($identifier['status']) && $identifier['status'] != SuspendableStatusEnum::Active) {
+        continue;
+      }
+
+      if($identifier['type'] == $cfg['identifier_type'] && is_null($facts['username'])) {
+        $facts['username'] = $identifier['identifier'];
+        $facts['usernameIdentifierId'] = $identifier['id'];
+      }
+
+      if($identifier['type'] == $cfg['persistent_user_id_type'] && is_null($facts['persistentUserId'])) {
+        $facts['persistentUserId'] = $identifier['identifier'];
+      }
+    }
+
+    foreach($emailAddresses as $email) {
+      if($email['type'] == $cfg['email_type'] && empty($email['source_email_address_id'])) {
+        $facts['email'] = $email['mail'];
+        $facts['emailVerified'] = !empty($email['verified']);
+        break;
+      }
+    }
+
+    return $facts;
+  }
+
+  /**
    * Provision for the specified CO Person.
    *
    * @since  COmanage Registry v4.3.4
@@ -880,7 +1113,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
    * @param  Array                  $provisioningData         Provisioning data, populated with ['CoPerson'] or ['CoGroup']
    * @return Boolean True on success
    */
-  
+
   public function provision($coProvisioningTargetData, $op, $provisioningData) {
     // Set the ID for this instance for logging.
     $this->activeId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['id'];
@@ -927,7 +1160,120 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Resolve the CO Person's link to the Dataverse account it names, without
+   * changing anything.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array   $facts                    CO Person facts from personFacts()
+   * @param  Integer $coPersonId               CO Person ID
+   * @return Array   state, account, link row, and a comment describing the state
+   */
+
+  protected function resolveLink($coProvisioningTargetData, $facts, $coPersonId) {
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
+
+    $ret = array('state' => 'none', 'account' => null, 'linkRow' => null, 'comment' => '');
+
+    $ret['linkRow'] = $this->getDataverseIdIdentifier($coPersonId, $coProvisioningTargetId);
+    $link = DataverseOwnership::parseLink($ret['linkRow']['Identifier']['identifier'] ?? null, $coProvisioningTargetId);
+
+    $atUsername = $this->lookupUserByUsername($facts['username']);
+
+    if($atUsername['error']) {
+      $ret['state'] = 'error';
+      $ret['comment'] = "Unable to query Dataverse for username " . $facts['username'];
+      return $ret;
+    }
+
+    $sameAccount = $atUsername['found'] && $atUsername['user']['id'] == $link['id'];
+
+    switch($link['state']) {
+      case DataverseOwnership::LINK_TRUSTED:
+        if($sameAccount) {
+          $ret['state'] = 'trusted';
+          $ret['account'] = $atUsername['user'];
+        } else {
+          $ret['state'] = 'conflict';
+          $ret['comment'] = "Conflict: linked Dataverse account " . $link['id'] . " is no longer at username " . $facts['username'];
+        }
+        break;
+      case DataverseOwnership::LINK_PREFIX:
+        if($sameAccount && DataverseOwnership::ownsAccount($facts, $atUsername['user'])) {
+          $ret['state'] = 'prefix';
+          $ret['account'] = $atUsername['user'];
+          $ret['comment'] = "Not yet verified: link was made before ownership checks";
+        } else {
+          $ret['state'] = 'conflict';
+          $ret['comment'] = "Conflict: link to Dataverse account " . $link['id'] . " made before ownership checks fails them";
+        }
+        break;
+      default:
+        if($atUsername['found'] && is_null(DataverseOwnership::ownsAccount($facts, $atUsername['user']))) {
+          $ret['state'] = 'conflict';
+          $ret['comment'] = "Conflict: Dataverse username " . $facts['username'] . " belongs to another person's account";
+        } else {
+          $ret['comment'] = "No Dataverse account is linked";
+        }
+        break;
+    }
+
+    return $ret;
+  }
+
+  /**
+   * Save the link from a CO Person to their Dataverse account, without
+   * triggering provisioning.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Integer $coPersonId             CO Person ID
+   * @param  Integer $coProvisioningTargetId Provisioning Target ID
+   * @param  Integer $dataverseId            Dataverse account id
+   * @param  Array   $linkRow                Existing link Identifier to update in place, or null
+   * @return Boolean True on success
+   */
+
+  protected function saveLink($coPersonId, $coProvisioningTargetId, $dataverseId, $linkRow) {
+    $logPrefix = "saveLink: CO Person $coPersonId: ";
+    $value = DataverseOwnership::formatLink($coProvisioningTargetId, $dataverseId);
+
+    $Identifier = $this->CoProvisioningTarget->Co->CoPerson->Identifier;
+
+    try {
+      $Identifier->clear();
+
+      if(!empty($linkRow['Identifier']['id'])) {
+        $Identifier->id = $linkRow['Identifier']['id'];
+        $ok = $Identifier->saveField('identifier', $value, array('provision' => false));
+      } else {
+        $args = array();
+        $args['Identifier']['identifier'] = $value;
+        $args['Identifier']['co_person_id'] = $coPersonId;
+        $args['Identifier']['type'] = IdentifierEnum::ProvisioningTarget;
+        $args['Identifier']['login'] = false;
+        $args['Identifier']['status'] = SuspendableStatusEnum::Active;
+        $args['Identifier']['co_provisioning_target_id'] = $coProvisioningTargetId;
+
+        $ok = $Identifier->save($args, array('provision' => false));
+      }
+    }
+    catch(Exception $e) {
+      $this->log($logPrefix . "conflict: unable to save link $value: " . $e->getMessage());
+      return false;
+    }
+
+    if(!$ok) {
+      $this->log($logPrefix . "conflict: unable to save link $value");
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Determine the provisioning status of this target.
+   *
+   * This only reads; it never changes links or triggers provisioning.
    *
    * @since  COmanage Registry v4.3.4
    * @param  Integer $coProvisioningTargetId CO Provisioning Target ID
@@ -971,66 +1317,31 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
       $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
 
-      // Find the Dataverse identifier.
-      $dataverseIdentifier = null;
-      foreach($coPerson['Identifier'] as $identifier) {
-        if($identifier['type'] == $identifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
-          $dataverseIdentifier = $identifier['identifier'];
-        }
-      }
+      $facts = $this->personFacts($coProvisioningTargetData,
+                                  $coPerson['Identifier'] ?? array(),
+                                  $coPerson['EmailAddress'] ?? array());
 
-      if(is_null($dataverseIdentifier)) {
-        $msg = "No Identifier of type " . $identifierType . " for CO Person";
-        $ret['comment'] = $msg;
-        $this->log($logPrefix . $msg);
+      if(is_null($facts['username'])) {
+        $ret['comment'] = "No Identifier of type " . $identifierType . " for CO Person";
         return $ret;
       }
 
-      // Query Dataverse server for authenticated user object.
-      $authenticatedUser = $this->getAuthenticatedUserByIdentifier($dataverseIdentifier);
+      $resolved = $this->resolveLink($coProvisioningTargetData, $facts, $id);
 
-      if(empty($authenticatedUser)) {
-        $msg = "No authenticated user found with identifier $dataverseIdentifier";
-        $this->log($logPrefix . $msg);
-
-        // See if a user with that email already exists.
-        
-        $emailType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['email_type'];
-        $email = null;
-
-        foreach ($coPerson['EmailAddress'] as $e) {
-          if($e['type'] == $emailType && empty($e['source_email_address_id'])) {
-            $email = $e['mail'];
-            break;
-          }
-        }
-
-        if(!empty($email)) {
-          $user = $this->getAuthenticatedUserByEmail($email);
-
-          if(!empty($user)) {
-            $ret['comment'] = "Provisioning failed, email $email already in Dataverse";
-          }
-        }
-      } else {
-        // The user is provisioned.
-        $ret['status'] = ProvisioningStatusEnum::Provisioned;
-        $ret['comment'] = $authenticatedUser['deactivated'] ? "User is deactivated in Dataverse" : "User is active in Dataverse";
-        $ret['timestamp'] = $authenticatedUser['createdTime'];
-
-        $this->log($logPrefix . $ret['comment']);
-      }
-
-      // Find any existing Identifier of type IdentifierEnum::ProvisioningTarget.
-      $dataverseIdIdentifier = $this->getDataverseIdIdentifier($id, $coProvisioningTargetId);
-
-      if(!empty($authenticatedUser) && is_null($dataverseIdIdentifier)) {
-        $this->addDataverseIdIdentifier($authenticatedUser['id'], $id, $coProvisioningTargetId);
-      } elseif (!empty($authenticatedUser) && ($dataverseIdIdentifier['Identifier']['identifier'] != ($coProvisioningTargetId . ':' . $authenticatedUser['id']))) {
-        $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
-        $this->addDataverseIdIdentifier($authenticatedUser['id'], $id, $coProvisioningTargetId);
-      } elseif(empty($authenticatedUser) && !is_null($dataverseIdIdentifier)) {
-        $this->deleteDataverseIdIdentifier($dataverseIdIdentifier['Identifier']['id']);
+      switch($resolved['state']) {
+        case 'trusted':
+          $account = $resolved['account'];
+          $ret['status'] = ProvisioningStatusEnum::Provisioned;
+          $ret['comment'] = !empty($account['deactivated']) ? "User is deactivated in Dataverse" : "User is active in Dataverse";
+          $ret['timestamp'] = $account['createdTime'] ?? null;
+          break;
+        case 'error':
+          $ret['status'] = ProvisioningStatusEnum::Unknown;
+          $ret['comment'] = $resolved['comment'];
+          break;
+        default:
+          $ret['comment'] = $resolved['comment'];
+          break;
       }
 
       return $ret;
@@ -1072,14 +1383,75 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Set the CO Person's Dataverse username Identifier to the username of
+   * their linked account, without triggering provisioning.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Array   $coProvisioningTargetData CO Provisioning Target data
+   * @param  Array   $facts                    CO Person facts from personFacts()
+   * @param  String  $username                 Username of the linked Dataverse account
+   * @param  String  $logPrefix                Log prefix of the caller
+   * @return Boolean True when the Identifier holds $username
+   */
+
+  protected function syncUsername($coProvisioningTargetData, $facts, $username, $logPrefix) {
+    if($username === $facts['username']) {
+      return true;
+    }
+
+    $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
+    $coId = $this->CoProvisioningTarget->field('co_id', array('CoProvisioningTarget.id' => $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id']));
+
+    $Identifier = $this->CoProvisioningTarget->Co->CoPerson->Identifier;
+
+    // Another CO Person holding this username would make the link ambiguous.
+    $args = array();
+    $args['conditions']['Identifier.type'] = $identifierType;
+    $args['conditions']['Identifier.identifier'] = $username;
+    $args['conditions']['Identifier.id !='] = $facts['usernameIdentifierId'];
+    $args['conditions']['CoPerson.co_id'] = $coId;
+    $args['contain'] = array('CoPerson');
+
+    $holder = $Identifier->find('first', $args);
+
+    if(!empty($holder)) {
+      $this->log($logPrefix . "conflict: Dataverse username $username is the Registry identifier of CO Person " . $holder['Identifier']['co_person_id']);
+      return false;
+    }
+
+    try {
+      $Identifier->clear();
+      $Identifier->id = $facts['usernameIdentifierId'];
+      $ok = $Identifier->saveField('identifier', $username, array('provision' => false));
+    }
+    catch(Exception $e) {
+      $this->log($logPrefix . "conflict: unable to change Identifier of type $identifierType from " . $facts['username'] . " to $username: " . $e->getMessage());
+      return false;
+    }
+
+    if(!$ok) {
+      $this->log($logPrefix . "conflict: unable to change Identifier of type $identifierType from " . $facts['username'] . " to $username");
+      return false;
+    }
+
+    $this->log($logPrefix . "changed Identifier of type $identifierType from " . $facts['username'] . " to $username");
+    return true;
+  }
+
+  /**
    * Update memberships in the dataverse explicit group.
+   *
+   * Changes are made only for the Dataverse account linked to the CO Person
+   * by a trusted link. Without one, nothing is sent: a grant waits for the
+   * CO Person to be linked, and a removal is skipped because the earlier
+   * grant may sit on another person's account.
    *
    * @since  COmanage Registry v4.3.4
    * @param  Array $coProvisioningTargetData CO Provisioning Target data
    * @param  Array $provisioningData         Provisioning data, populated with ['CoPerson'] and ['CoGroup']
    * @return Boolean True on success
    */
-  
+
   protected function updateExplicitGroupMembership($coProvisioningTargetData, $provisioningData) {
     // We only operate on CO Group updates that include membership updates.
     $coPersonId = $provisioningData['CoGroup']['CoPerson']['id'] ?? null;
@@ -1088,29 +1460,66 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
     }
 
     $logPrefix = "updateExplicitGroupMembership: CO Person $coPersonId: ";
+    $coProvisioningTargetId = $coProvisioningTargetData['CoDataverseProvisionerTarget']['co_provisioning_target_id'];
 
-    // Pull the CoPerson record to find the Dataverse Identifier.
+    // Pull the CoPerson record to find the Dataverse Identifier and email.
     $args = array();
     $args['conditions']['CoPerson.id'] = $coPersonId;
     $args['contain'] = array();
     $args['contain'][] = 'Identifier';
+    $args['contain'][] = 'EmailAddress';
 
     $coPerson = $this->CoProvisioningTarget->Co->CoPerson->find('first', $args);
 
-    // Find the Dataverse identifier.
-    $identifierType = $coProvisioningTargetData['CoDataverseProvisionerTarget']['identifier_type'];
-    $dataverseIdentifier = null;
-    foreach($coPerson['Identifier'] as $identifier) {
-      if($identifier['type'] == $identifierType && $identifier['status'] = SuspendableStatusEnum::Active) {
-        $dataverseIdentifier = $identifier['identifier'];
-        break;
-      }
-    }
+    $facts = $this->personFacts($coProvisioningTargetData,
+                                $coPerson['Identifier'] ?? array(),
+                                $coPerson['EmailAddress'] ?? array());
 
-    if(is_null($dataverseIdentifier)) {
+    if(is_null($facts['username'])) {
       $msg = "Could not determine dataverse Identifier";
       $this->log($logPrefix . $msg);
       return false;
+    }
+
+    // Is this a grant or a removal? Only a current membership row is a grant.
+    $isMember = false;
+    foreach($provisioningData['CoGroup']['CoGroupMember'] ?? array() as $m) {
+      if(!empty($m['member'])
+         && (empty($m['valid_from']) || strtotime($m['valid_from']) < time())
+         && (empty($m['valid_through']) || strtotime($m['valid_through']) >= time())) {
+        $isMember = true;
+      }
+    }
+
+    $resolved = $this->resolveLink($coProvisioningTargetData, $facts, $coPersonId);
+
+    if($resolved['state'] == 'prefix') {
+      // The link made before ownership checks passes them, so trust it from now on.
+      if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $resolved['account']['id'], $resolved['linkRow'])) {
+        return false;
+      }
+      $resolved['state'] = 'trusted';
+    }
+
+    if($resolved['state'] != 'trusted') {
+      if($isMember) {
+        $this->log($logPrefix . "no trusted link so no membership granted: " . $resolved['comment']);
+      } else {
+        $this->log($logPrefix . "no trusted link so removal skipped; an earlier grant may sit on Dataverse account @" . $facts['username'] . ": " . $resolved['comment']);
+      }
+      return false;
+    }
+
+    $account = $resolved['account'];
+    $username = DataverseOwnership::username($account);
+
+    if($isMember) {
+      if(!empty($account['deactivated'])) {
+        $this->log($logPrefix . "Dataverse account @$username is deactivated so no membership granted");
+        return false;
+      }
+
+      return $this->grantGroupMembership($coProvisioningTargetData, $provisioningData, $username, $logPrefix);
     }
 
     // Find the owner dataverse and explicit group alias.
@@ -1123,28 +1532,16 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       return false;
     }
 
-    // The URL path is the same for adding (PUT) or removing (DELETE).
-    $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias/roleAssignees/@$dataverseIdentifier";
-
-    if(!empty($provisioningData['CoGroup']['CoGroupMember'])) {
-      $response = $this->Http->put($path);
-      if($response->code != 200) {
-        $this->log($logPrefix . "Error adding membership");
-        $this->log($logPrefix . "Response from server was " . print_r($response, true));
-        return false;
-      }
-      $msg = "added to group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
-      $this->log($logPrefix . $msg);
-    } else {
-      $response = $this->Http->delete($path);
-      if($response->code != 200) {
-        $this->log($logPrefix . "Error deleting membership");
-        $this->log($logPrefix . "Response from server was " . print_r($response, true));
-        return false;
-      }
-      $msg = "removed from group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
-      $this->log($logPrefix . $msg);
+    $path = "/api/dataverses/$ownerDataverseAlias/groups/$explicitGroupAlias/roleAssignees/@$username";
+    $response = $this->Http->delete($path);
+    if($response->code != 200) {
+      $this->log($logPrefix . "Error deleting membership");
+      $this->log($logPrefix . "Response from server was " . print_r($response, true));
+      return false;
     }
+
+    $msg = "removed @$username from group alias $explicitGroupAlias with owner dataverse alias $ownerDataverseAlias";
+    $this->log($logPrefix . $msg);
 
     return true;
   }
