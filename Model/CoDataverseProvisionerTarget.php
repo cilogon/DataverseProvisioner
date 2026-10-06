@@ -605,7 +605,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
       $account = $resolved['account'];
     } elseif($resolved['state'] == DataverseOwnership::STATE_PREFIX) {
       // The link made before ownership checks passes them, so trust it from now on.
-      if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $link['id'], $linkRow)) {
+      if(!$this->trustPrefixLink($coPersonId, $coProvisioningTargetId, $link['id'], $linkRow, $logPrefix)) {
         return false;
       }
 
@@ -1634,6 +1634,31 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
   }
 
   /**
+   * Turn a link made before the ownership rules into a trusted link, once
+   * it has passed them, unless another CO Person already holds a trusted
+   * link to the same account.
+   *
+   * @since  COmanage Registry v4.3.5
+   * @param  Integer $coPersonId             CO Person ID
+   * @param  Integer $coProvisioningTargetId Provisioning Target ID
+   * @param  Integer $dataverseId            Dataverse account id
+   * @param  Array   $linkRow                Existing link Identifier
+   * @param  String  $logPrefix              Log prefix of the caller
+   * @return Boolean True when the link is now trusted
+   */
+
+  protected function trustPrefixLink($coPersonId, $coProvisioningTargetId, $dataverseId, $linkRow, $logPrefix) {
+    $holders = $this->linkHolders($coProvisioningTargetId, $dataverseId, $coPersonId);
+
+    if(!empty($holders['trusted'])) {
+      $this->log($logPrefix . "conflict: Dataverse account $dataverseId is already linked to CO Person " . implode(", ", $holders['trusted']));
+      return false;
+    }
+
+    return $this->saveLink($coPersonId, $coProvisioningTargetId, $dataverseId, $linkRow);
+  }
+
+  /**
    * Update memberships in the dataverse explicit group.
    *
    * Changes are made only for the Dataverse account linked to the CO Person
@@ -1679,7 +1704,7 @@ class CoDataverseProvisionerTarget extends CoProvisionerPluginTarget {
 
     if($resolved['state'] == DataverseOwnership::STATE_PREFIX) {
       // The link made before ownership checks passes them, so trust it from now on.
-      if(!$this->saveLink($coPersonId, $coProvisioningTargetId, $resolved['account']['id'], $resolved['linkRow'])) {
+      if(!$this->trustPrefixLink($coPersonId, $coProvisioningTargetId, $resolved['account']['id'], $resolved['linkRow'], $logPrefix)) {
         return false;
       }
       $resolved['state'] = DataverseOwnership::STATE_TRUSTED;
