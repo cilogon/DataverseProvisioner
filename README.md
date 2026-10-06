@@ -37,7 +37,7 @@ API token, see the Dataverse documentation at
 | ------------------------------------ | ---------------- | ------- | ----- |
 | identifier | Identifier of configured type | skoranda | Identifier type chosen during plugin configuration. Usually an Extended Type. |
 | persistentUserId | Identifier of configured type | http://cilogon.org/serverT/users/27326098 | Identifier type chosen during plugin configuration. OIDC sub logical choice.
-| id | Identifier of type Provisioning Target | 1:11 | Returned by Dataverse when creating user and saved by plugin after prepending the ID of the provisioner instance. |
+| id | Identifier of type Provisioning Target | 1:11:v2 | The Dataverse account id, saved by the plugin after prepending the ID of the provisioner instance. The `:v2` suffix marks a link made under the account ownership rules (see below); a link without it was made by an earlier version and is re-checked on first use. |
 | authenticationProviderId | None | https://archive-dev.ada.edu.au/ | Part of plugin configuration. Static for all users. Provided by Dataverse administrator. |
 | firstName | Name (given) | Scott | Name type chosen during plugin configuration (e.g. Official) |
 | lastName | Name (family) | Koranda | Name type chosen during plugin configuration (e.g. Official) |
@@ -100,9 +100,12 @@ The naming convention for CO Groups is
 
 It is common to append a trailing suffix after the DOI to distinguish access modes
 or other variants, for example `-Restricted`, `-General`, or any other single token
-without additional dashes. When present, the provisioner strips that final
-`-<suffix>` before looking up the DOI so both `ANU Poll-doi:10.12345/XYZ`
+without additional dashes. The provisioner first looks up the whole Identifier
+value as a DOI, so a DOI that itself contains a dash is used as is. Only when
+that lookup definitely finds nothing does the provisioner strip the final
+`-<suffix>` and look up the rest, so both `ANU Poll-doi:10.12345/XYZ`
 and `ANU Poll-doi:10.12345/XYZ-Restricted` resolve to the same dataset.
+Any other lookup failure stops provisioning for that CO Group.
 The Dataverse explicit group alias is generated as
 `authorized_<doi>` and, when a suffix is present, extended to
 `authorized_<doi>_<suffix>`, where the suffix is lowercased and non-alphanumeric
@@ -165,28 +168,11 @@ following are true:
      configured Dataverse Email type.
    - The CO Person is a member of at least one authorization group,
      that is a member of a CO Group with the configured Group Identifier type.
-   - The CO Person record has not been successfully provisioned previously.
+   - No Dataverse account that belongs to the CO Person already exists
+     (see Account Ownership below).
 
-- Before attempting to create a user in Dataverse the plugin queries the `admin`
-  API at `/api/admin/list-users` and query string `searchTerm` with the value
-  of the EmailAddress attached to the CO Person record. Only when that search
-  returns empty does the plugin attempt to create a user in Dataverse.
-
-- The plugin will fail to create a user in Dataverse when any of the
-following are true in the Dataverse database:
-   - A user already exists with the email address.
-   - A user already exists with the identifier.
-   - A user already exists with the persistentUserId.
-
-- The plugin will, however, reconcile an existing user in Dataverse with
-the same email address and will attempt to edit in Registry the Identifier of the
-configured Dataverse Identifier type so that it is synchronized with the existing
-value in Dataverse. Since no two CO Person records may have the same Identifier
-of the same type with the same value, however, it is possible for the reconcilliation
-and synchronization for an existing Dataverse user with the same email address
-to fail. When that happens manual intervention by the Dataverse admin and the
-Registry CO admin will be required to effectively synchronize the CO Person
-record with the Dataverse user.
+- See Account Ownership below for how the plugin decides which Dataverse
+  account belongs to a CO Person, and what happens when it cannot.
 
 - The plugin does not support updates for CO Group names or descriptions. Once the
   explicit group is created in Dataverse it cannot be changed or deleted.
@@ -201,6 +187,82 @@ record with the Dataverse user.
   Dataverse explicit group’s display name matches the Registry CO Group name. If the alias
   exists but the display name differs, status reports the mismatch instead of marking the
   group as provisioned.
+
+### Account Ownership
+
+A Registry-assigned Dataverse username (for example `RNadal`) can match an
+existing Dataverse account that belongs to a different person. The plugin
+therefore never treats an account as a CO Person's because of the username
+alone. An account belongs to a CO Person only when:
+
+1. its `authenticationProviderId` and `persistentUserId` equal the configured
+   authentication provider and the CO Person's persistent user Identifier, or
+1. failing that, its email equals the CO Person's EmailAddress of the
+   configured type exactly (ignoring case), and that EmailAddress is marked
+   verified in Registry.
+
+The candidate accounts are the account at the CO Person's Registry username
+and any account whose email matches. When one belongs to the CO Person the
+plugin links it, stores the link as an Identifier of type Provisioning Target
+(`<target>:<id>:v2`), and, if the account's username differs, changes the
+CO Person's Dataverse Identifier to match. When none does and the username is
+free, the plugin creates the account and links it.
+
+Email matching is safe only if a Dataverse account cannot carry an email its
+owner did not prove: builtin account sign-up and account email editing should
+be disabled on the Dataverse server, and every enabled login provider should
+assert verified emails.
+
+Group membership changes are made only for the linked account. When a CO
+Person is linked, the plugin also grants the account membership in the
+explicit group of every DOI CO Group the CO Person belongs to. Identifier
+changes made by the plugin do not trigger provisioning, and viewing
+provisioning status never changes anything.
+
+#### Conflicts
+
+The plugin fails closed: it creates no account, grants no membership, and
+records a conflict in the Registry log (and in the CO Person's provisioning
+status) when
+
+- the CO Person's username belongs to another person's Dataverse account,
+- account creation fails because the email or login identity is already used,
+- the CO Person's email matches an account but is not verified in Registry,
+- the account is already linked to another CO Person,
+- the account's username is the Registry Identifier of another CO Person, or
+- a link made by an earlier version of the plugin fails the rules above.
+
+A CO Group membership removal for a CO Person without a trusted link is not
+sent to Dataverse, because the earlier grant may sit on another person's
+account. The log notes this; the audit below finds such memberships.
+
+To resolve a username conflict, change the CO Person's Identifier of the
+configured Dataverse Identifier type to an unused value and request
+reprovisioning of the CO Person. The plugin then links the CO Person's own
+account, or creates one, and grants their CO Group memberships. Access that
+was granted to the wrong account earlier is not removed automatically.
+
+#### Audit
+
+The audit lists Dataverse group access that may sit on the wrong account.
+It reads Registry and Dataverse and changes nothing. From the Registry `app`
+directory run
+
+```
+Console/cake DataverseProvisioner.DataverseAudit <target id>
+```
+
+where `<target id>` is the ID of the CO Dataverse Provisioner Target. For each
+CO Group with a DOI Identifier it prints
+
+- `PERSON` lines for CO Group members whose Dataverse link is in conflict,
+  naming the account at their username and whether that account is in the
+  Dataverse explicit group, and
+- `UNEXPECTED` lines for Dataverse explicit group members not backed by a CO
+  Group member with a trusted link.
+
+Run the audit after deploying this version and periodically afterward, and
+remove wrong memberships in Dataverse by hand.
 
 ## Configuration
 
@@ -331,3 +393,14 @@ Repeat the steps below once for each Dataverse server.
 1. Click `SAVE`.
 
 ## Testing
+
+The account ownership rules in `Lib/DataverseOwnership.php` have unit tests
+that run with PHPUnit outside Registry:
+
+```
+composer install
+vendor/bin/phpunit
+```
+
+Everything else needs a Registry deployment with a Dataverse server, such as
+CADRE TEST.
