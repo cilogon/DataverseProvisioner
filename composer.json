@@ -1,0 +1,11 @@
+{
+  "name": "cilogon/dataverse-provisioner",
+  "description": "COmanage Registry Dataverse Provisioner plugin (dev tooling only; Registry does not use this file)",
+  "license": "Apache-2.0",
+  "require-dev": {
+    "phpunit/phpunit": "^11.5"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}
